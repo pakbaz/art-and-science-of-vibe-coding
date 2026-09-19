@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node data/store.js",
-    "test": "npm run seed && node --test test/",
-    "test:fast": "INVOICE_FIXTURE=data/fixture-100.json node --test test/"
+    "test": "npm run seed && node --test --test-reporter=tap test/",
+    "test:fast": "node -e \"process.env.INVOICE_FIXTURE='data/fixture-100.json';const r=require('node:child_process').spawnSync(process.execPath,['--test','--test-reporter=tap','test/'],{stdio:'inherit',env:process.env});process.exitCode=r.status??1;\""
   }
 }

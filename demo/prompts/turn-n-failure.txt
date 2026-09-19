@@ -1,5 +1,3 @@
-The acceptance suite was run against your work and it did not pass.
-
-<GATE_OUTPUT>
-
-Fix the implementation so the acceptance suite passes. Do not change the acceptance suite; it is not in your workspace. When you are done, reply with the same summary format as before.
+Use `node demo/run.js feedback A|B --trial <id>` from the parent demo repository.
+Send its output unchanged. It contains only failures observed in the latest
+check and the same workspace-only restriction used for both lanes.

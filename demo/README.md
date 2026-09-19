@@ -1,227 +1,211 @@
-# Live demo: add an overdue-invoices filter
+# Live A/B demo: overdue invoices
 
-A controlled A/B comparison you can run on stage. Two agents get the same
-feature request against the same codebase. One works in the repository as it is.
-The other works in a repository that has been prepared. A shared acceptance gate,
-which neither agent is allowed to see, decides who actually finished.
+This is an honest, repeatable comparison of two real coding-agent sessions
+starting from the same invoice application commit.
 
-Everything here is synthetic. There is no customer data and no production system.
+- **A** gets a normal repository and the short feature prompt. It may still
+  receive globally injected user instructions and tool grants from the host.
+- **B** gets the same commit and prompt, plus a documented `AGENTS.md` workflow,
+  a curated 100-row fixture, and `npm run test:fast`.
+- Both must pass the repository's full test command and an external acceptance
+  suite. A run does not finish when an agent says it is done.
 
----
+Nothing here guarantees B will win. Report incomplete runs and non-comparable
+metrics as such.
 
-## What is in this folder
+## Requirements
 
-| Path | What it is |
-| --- | --- |
-| `baseline/` | The brownfield invoice console. Server-rendered, no framework, no dependencies. It has filters, 25-row pagination, shared amount formatting and HTML escaping. It does **not** have an overdue filter. That is the feature. |
-| `FEATURE-REQUEST.md` | The request handed to both runs, byte-identical. |
-| `prep/` | Run B's preparation: `AGENTS.md`, the curated 100-case fixture and its builder, the fixture-aware `store.js`, and the `package.json` carrying `test:fast`. |
-| `gate/acceptance.test.js` | The shared final gate. 11 tests. Lives outside both workspaces on purpose. |
-| `scripts/setup-runs.sh` | Builds `runs/A` and `runs/B` from the same baseline. |
-| `scripts/run-gate.sh` | Copies the gate into a workspace, runs it, records the result, removes it again. |
-| `prompts/` | The canonical turn-1 prompt and the failure-feedback template. Both runs get identical wording. |
-| `results/scoreboard.json` | The recorded trial from 18 September 2026, with its conditions and its gaps. |
-| `results/scoreboard-trial1.json` | An earlier, weaker trial that stopped at "agent says done" instead of at the gate. Kept as a cautionary example. |
+- Node.js and Git
+- No npm install and no external packages
+- Two real child sessions created by the presenter with identical model,
+  reasoning, and tool grants
 
----
-
-## The feature, and why it is a good demo
-
-The request says "show me overdue invoices". It specifies the interface
-(`GET /invoices?overdue=1`, combines with existing filters, `INVOICE_AS_OF` for
-the as-of date) because a shared gate needs a stable surface to test.
-
-It deliberately does **not** define which statuses still count as owed. That
-single omission is the whole demo. An agent has to guess, and the plausible
-guess is wrong.
-
-The real rule, stated in run B's `AGENTS.md`:
-
-> Overdue means `status` is neither `PAID` nor `CANCELLED`, **and** `dueDate` is
-> strictly before the as-of date. An invoice due *on* the as-of date is not
-> overdue yet.
-
-A past-due `DRAFT` invoice is overdue. That is the case people miss.
-
----
-
-## Running it
-
-### 1. Build the two workspaces
+## Runner contract
 
 ```bash
-cd demo
-node prep/build-fixture.js      # only if you changed the fixture
-./scripts/setup-runs.sh
+node demo/run.js help
+node demo/run.js prepare --id rehearsal-01 --json
+node demo/run.js attach A /absolute/worktree/A --session SESSION_A --trial rehearsal-01
+node demo/run.js attach B /absolute/worktree/B --session SESSION_B --trial rehearsal-01
+node demo/run.js start A --trial rehearsal-01
+node demo/run.js check A --trial rehearsal-01
+node demo/run.js feedback A --trial rehearsal-01
+node demo/run.js mark-incomplete A --reason "bounded retry limit reached" --trial rehearsal-01
+node demo/run.js start B --trial rehearsal-01
+node demo/run.js check B --trial rehearsal-01
+node demo/run.js twtty B --trial rehearsal-01
+node demo/run.js insights A --trial rehearsal-01 \
+  --provenance "child session Insights" --reference "SESSION_A" \
+  --model "MODEL" --ai-credit-value 12.3 --ai-credit-unit AIU \
+  --input-tokens 1000 --output-tokens 500 --cache-read-tokens 300 \
+  --api-calls 8 --model-runtime-seconds 42.1
+node demo/run.js compare --trial rehearsal-01
 ```
 
-`runs/A` is the baseline untouched. `runs/B` is the baseline plus preparation.
-Neither contains the gate.
+`record` is an alias for `insights`; `--state /absolute/path/state.json` can
+replace `--trial ID`.
 
-### 2. Prove the gate is red first
+### `prepare`
 
-```bash
-./scripts/run-gate.sh "$PWD/baseline" baseline-red-check
-```
+Creates a unique ignored directory at `demo/.runs/<id>` and an app-only Git
+repository in `source/`. The source history contains only the baseline app,
+README, and complete `FEATURE-REQUEST.md`. It has no gate, prep, results, deck,
+or opposite lane. Existing trials are never overwritten.
 
-Expect 8 of 11 failing. The 3 that pass are regression guards for pagination,
-amount formatting and escaping. Show this. A test that cannot fail proves
-nothing, and this is the same discipline the session argues for.
+`--json` prints absolute `sourceRepo` and `statePath` values for orchestration.
+The command does not launch an agent or create an app child session.
 
-### 3. Run A, then run B, and drive each one to green
+The exact JSON fields are:
 
-Open two fresh agent sessions, same model, same harness, same reasoning setting.
-Run them **sequentially, not in parallel**, or CPU contention will corrupt the
-elapsed times. Use `prompts/turn-1.txt` for both, substituting the workspace
-path. Nothing else about the prompt may differ.
-
-**A run is finished when the shared gate passes, not when the agent says it is
-done.** This is the part that is easy to get wrong. Loop:
-
-1. Send the turn-1 prompt. Start the clock.
-2. Run the gate (step 4 below).
-3. If it fails, send `prompts/turn-n-failure.txt` with the gate output pasted in,
-   and go back to step 2.
-4. Stop the clock when the gate is green. Record the number of turns.
-
-Do not mention the gate's existence or its source to either agent. Feed back only
-what it printed, which is what a developer would see.
-
-### 4. Run the shared gate
-
-```bash
-./scripts/run-gate.sh "$PWD/runs/A" A
-./scripts/run-gate.sh "$PWD/runs/B" B
-```
-
-### 5. Measure AI usage
-
-The local session store writes one `assistant_usage_events` row per API call,
-including sub-agent calls, keyed by `agent_id`. AI units are `total_nano_aiu`
-divided by a billion.
-
-```sql
-SELECT agent_id,
-       COUNT(*)                        AS api_calls,
-       SUM(input_tokens)               AS input_tokens,
-       SUM(output_tokens)              AS output_tokens,
-       SUM(cache_read_tokens)          AS cache_read,
-       SUM(reasoning_tokens)           AS reasoning,
-       SUM(total_nano_aiu)/1000000000.0 AS ai_units,
-       SUM(duration_ms)/1000.0          AS model_seconds
-FROM assistant_usage_events
-WHERE agent_id IN ('<run A agent id>', '<run B agent id>')
-GROUP BY agent_id;
-```
-
-The cloud `session_usage` view lags by days and is useless for a same-day trial.
-Use the local table.
-
-### 6. Read the scoreboard in the right order
-
-Turns first, then wall clock, then AI usage, then the gate result. Then explain
-*why*: one wrong guess about what "overdue" means cost run A an entire extra
-turn.
-
----
-
-## What happened on 18 September 2026
-
-Full record in `results/scoreboard.json`. The earlier, weaker trial is kept in
-`results/scoreboard-trial1.json`.
-
-| | Run A, as-is | Run B, prepared |
-| --- | --- | --- |
-| Turns to a green gate | 2 | **1** |
-| Wall clock to green | 131 s | **72 s** |
-| AI usage | 22.11 AIU, 15 calls | **13.65 AIU, 8 calls** |
-| Output tokens | 5,539 | **3,830** |
-| Gate on first attempt | **FAILED, 3 of 11** | **PASSED, 11 of 11** |
-
-Driven to the same finish line, the prepared run cost less on every axis
-measured. Run A's first attempt implemented:
-
-```js
-function isOverdue(invoice, asOf) {
-  return invoice.status === "SENT" && invoice.dueDate < asOf;
+```json
+{
+  "trialId": "<id>",
+  "sourceRepo": "<absolute app-only repository path>",
+  "statePath": "<absolute persistent state path>",
+  "baseCommit": "<40-character commit>",
+  "prompt": "<exact shared kickoff prompt>"
 }
 ```
 
-Past-due `DRAFT` invoices vanish. All three gate failures trace to that one line.
-It took a full round trip through the gate to discover it.
+### `attach`
 
-**The brief did not make the model faster.** It removed an ambiguity the model
-could not resolve from the code. Ambiguity is what produces confident, wrong
-work, and confident wrong work is what you pay for twice.
+Registers an externally created, pristine Git worktree of that exact source
+repository and commit. It rejects the source repository itself, dirty trees,
+wrong commits, unrelated repositories, duplicate lane paths, and symlinked
+paths. The same child session ID cannot be attached to both lanes. B's
+documented workflow and fixture support are overlaid only now, and its setup
+time is recorded separately.
 
-### Why an earlier trial said the opposite
+Worktrees isolate checked-out changes; they are not security sandboxes. They
+share Git object/history storage and do not prevent tools from reading other
+filesystem paths. The app-only source repository has no parent presentation
+repository in its commit history, and the identical kickoff prompt explicitly
+restricts each child to its own repository. Host-injected user instructions and
+available tools can still influence both lanes, so do not describe A as having
+“zero instructions.”
 
-The first trial stopped each run where the agent declared itself done. By that
-measure Run A "won" at 72 s against B's 141 s, while failing 3 of 11 gate tests.
-Measuring a run where it claims success rather than where it passes acceptance
-flatters whichever run gives up earliest. Both trials are kept so you can show
-the trap if you want to.
+For a CLI-only rehearsal, `worktrees` creates any missing A/B worktrees from the
+same commit. It never duplicates an attached lane.
 
----
+### `start`, `check`, and `feedback`
 
-## The TWTTY step
+`start` records wall-clock time immediately before the presenter sends the
+returned short prompt. A and B must run sequentially.
 
-Run B's preparation is what a TWTTY conversation produces. To show that live
-rather than assert it, run this against `runs/A` after it finishes:
+`check` always runs:
 
+1. the repository's full `npm test`; and
+2. the external acceptance suite through a real ephemeral HTTP server.
+
+Before `npm test`, the runner verifies the prepared full-test and seed scripts,
+their lifecycle hooks, every original regression-test hash, the generator hash,
+and the lane-specific store hash. Added tests and extra fast commands are
+allowed; deleting or weakening the original full path blocks the command. The
+full environment removes inherited `INVOICE_*` controls, then sets
+`INVOICE_COUNT=400000`, clears the fixture override, and verifies that the
+generated file actually contains 400,000 rows.
+
+The external suite uses `buildApp` with an in-memory fixture and never copies
+test code or rewrites data inside the app. Full TAP logs, elapsed time per
+command, data hashes, and every attempt persist under the trial. The clock stops
+only when both checks pass. `feedback` prints only failures actually observed.
+Use `mark-incomplete` after a bounded stagnation policy so the next lane can
+start; an incomplete lane has no pass time.
+
+### Conditional TWTTY
+
+`twtty B` is rejected until B has an actual failed check. It names the measured
+slowest command, includes observed missing checks, requests the smallest safe
+change, and opens a timed intervention window closed by the next `check`. Do not
+describe a historical run as TWTTY-optimized unless this intervention actually
+occurred in that run. TWTTY may optimize the inner loop, but B must still pass
+the unchanged full `npm test` and independent acceptance gate.
+
+### Insights and comparison
+
+Copy values manually from each real child session's Insights panel. Missing
+values remain `null`, never zero. Currency cost, AI credits, tokens, API calls,
+model runtime, and wall time remain separate fields with provenance. `compare`
+shows completion, time to actual pass, iterations, active command time, B
+workspace-overlay time, measured workspace-preparation totals, interventions,
+and Insights. It never declares a winner and never compares different units.
+
+`sourcePreparationMs` measures source materialization and the initial Git commit.
+Lane `setupMs` measures worktree registration and, for B, overlay copying. These
+do **not** measure authoring the reusable B preparation or provisioning the host
+project and child sessions. Accordingly:
+
+- `preparationTimingScope` is
+  `workspace materialization/overlay only; authoring and host-session provisioning not measured`;
+- unmeasured authoring and provisioning fields remain `null`;
+- `totalIncludingWorkspacePreparationMs` includes only measured
+  materialization/overlay plus run wall time; and
+- `endToEndTotalMs` remains `null`.
+
+Do not present the measured workspace sum as an all-in total or infer end-to-end
+savings while authoring and provisioning remain unknown.
+
+Wall time includes model work, commands, feedback round trips, and presenter or
+user pauses between `start` and a passing `check`.
+
+Exact optional Insights flags:
+
+```text
+--model
+--cost-value --cost-unit
+--ai-credit-value --ai-credit-unit
+--input-tokens --output-tokens
+--cache-read-tokens --cache-write-tokens
+--api-calls
+--model-runtime-seconds
 ```
-Here are the commands you just ran and how long each took. Name the step that
-cost the most and explain what makes it expensive. Propose the smallest safe
-change that still satisfies every acceptance criterion, list anything the change
-would stop covering, and tell me how we would measure whether it helped. Do not
-change the acceptance criteria.
-```
 
-Then compare its proposal against what is already in `prep/`.
+`--provenance` and `--reference` are required.
 
----
+## Presenter flow
 
-## Honesty rules for presenting this
+1. Run `prepare --json`.
+2. Use the app's `create_project` API on `sourceRepo`.
+3. Create two idle worktree child sessions from that project with identical
+   settings. Because `create_session` cannot select a model without a kickoff,
+   explicitly select and verify the same model in both fresh idle sessions
+   before either `start`.
+4. Attach their absolute workspace paths and session IDs.
+5. Start and finish A, then start and finish B.
+6. After each failed check, send exactly the generated `feedback`.
+7. Use a bounded retry/stagnation rule; mark a lane incomplete honestly.
+8. If B genuinely struggles, optionally run `twtty B` and send its prompt.
+9. Copy each child session's Insights into `insights`.
+10. Run `compare`.
 
-These are not optional. The session argues for measurement, so the measurement
-has to survive scrutiny.
+The copyable main-session orchestration prompt is
+[`prompts/main-session-orchestration.md`](prompts/main-session-orchestration.md).
 
-- **n = 1.** One trial is an illustration. For any quantified claim in public,
-  repeat the trial and report the median, not the best run.
-- **Say the run order and the cache state.** A first, then B, both cold.
-- **Measure to the gate, not to "done".** Stopping where the agent claims success
-  is the single easiest way to get a wrong answer here, and it is exactly what
-  the first trial did.
-- **Run B's preparation was not timed.** It is therefore *not* inside B's 72 s,
-  and a fair end-to-end total cannot be computed from this trial. State that.
-  If you rebuild the preparation, time it.
-- **AI units are a billing unit, not a token count.** Quote both if you quote
-  either.
-- **A faster inner loop is not a token saving** and 100 rows is not a scale test.
-- **The gate asserts server-generated HTML only.** It says nothing about
-  JavaScript behaviour, layout or accessibility. Those belong to the browser
-  smoke check and the full-scale run.
-- **Run A was not sabotaged.** It is the repository as it stands, with its own
-  documented test command. Do not degrade it to make the point.
-- **If A ever wins, say so** and look at why. That is the interesting case.
+## What acceptance covers
 
----
+- the conventional business rule: only `SENT` and strictly before as-of
+- valid leap-day and date boundaries
+- composition with `q`, `status`, and `customer`
+- 25-row pagination and query preservation
+- checkbox rendering and checked state
+- filtered count and all-page outstanding total
+- amount formatting and HTML escaping regressions
+- a real built-in Node HTTP smoke request
 
-## Resetting between rehearsals
+It does **not** claim browser automation, authentication, accessibility, visual
+layout quality, production scale performance, or real customer data.
 
-To discard staged and unstaged changes to tracked starter files, run from the
-repository root:
+## Files
 
-```bash
-git restore --source=HEAD --staged --worktree -- demo/baseline/
-```
+| Path | Purpose |
+| --- | --- |
+| `baseline/` | Unimplemented starting application |
+| `FEATURE-REQUEST.md` | Complete byte-identical feature specification |
+| `prep/` | B-only workflow and fixture support; no completed feature |
+| `gate/acceptance.test.js` | External, non-mutating final acceptance |
+| `run.js` | Persistent zero-dependency experiment runner |
+| `test/run.test.js` | Runner and red/green acceptance tests |
+| `results/` | Historical, explicitly non-comparable records |
 
-Then rebuild the rehearsal workspaces:
-
-```bash
-cd demo
-rm -rf runs
-./scripts/setup-runs.sh
-```
-
-`runs/` is disposable and is rebuilt from `baseline/` every time.
+`scripts/setup-runs.sh` and `scripts/run-gate.sh` are compatibility entry points
+for the runner; neither performs destructive directory copying.

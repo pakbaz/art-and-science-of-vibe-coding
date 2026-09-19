@@ -7,6 +7,6 @@
   "scripts": {
     "start": "node src/server.js",
     "seed": "node data/store.js",
-    "test": "npm run seed && node --test test/"
+    "test": "npm run seed && node --test --test-reporter=tap test/"
   }
 }

@@ -1,3 +1,5 @@
+.runs/
+.test-runs/
 runs/
 baseline/data/invoices.json
 **/data/invoices.json

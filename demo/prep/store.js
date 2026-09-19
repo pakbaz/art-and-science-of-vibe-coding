@@ -7,9 +7,8 @@ const { generateInvoices } = require("./generate");
 const DATA_FILE = path.join(__dirname, "invoices.json");
 const INVOICE_COUNT = Number(process.env.INVOICE_COUNT || 400000);
 
-// INVOICE_FIXTURE points the app and the suite at a small curated dataset so the
-// inner loop does not pay for 400,000 rows on every run. `npm test` leaves it
-// unset and uses the full seeded dataset.
+// INVOICE_FIXTURE points the app and suite at a curated dataset. `npm test`
+// leaves it unset and uses the full generated dataset.
 function fixturePath() {
   if (!process.env.INVOICE_FIXTURE) return null;
   return path.isAbsolute(process.env.INVOICE_FIXTURE)

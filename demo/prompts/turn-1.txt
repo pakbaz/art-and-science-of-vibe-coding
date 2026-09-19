@@ -1,15 +1,2 @@
-You are working in an existing internal invoice admin console located at:
-
-<WORKSPACE>
-
-Implement the feature described in FEATURE-REQUEST.md in that directory.
-
-Follow any repository instructions you find in the workspace.
-
-Work only inside that directory. Do not read or modify anything outside it. When you are done, make sure the repository's own test command passes, and reply with:
-- a one-line summary of what you changed
-- the list of files you changed
-- the exact commands you ran, in order
-- the number of times you ran a test command
-
-Do not ask me questions. Make reasonable decisions and proceed.
+Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Work only in this repository.

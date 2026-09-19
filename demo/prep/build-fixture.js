@@ -71,7 +71,7 @@ while (rows.length < 100) {
 }
 
 const overdue = rows.filter(
-  (row) => row.status !== "PAID" && row.status !== "CANCELLED" && row.dueDate < AS_OF,
+  (row) => row.status === "SENT" && row.dueDate < AS_OF,
 );
 
 const target = path.join(__dirname, "fixture-100.json");
