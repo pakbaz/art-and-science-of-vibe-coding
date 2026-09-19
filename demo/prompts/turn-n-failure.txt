@@ -1,0 +1,5 @@
+The acceptance suite was run against your work and it did not pass.
+
+<GATE_OUTPUT>
+
+Fix the implementation so the acceptance suite passes. Do not change the acceptance suite; it is not in your workspace. When you are done, reply with the same summary format as before.

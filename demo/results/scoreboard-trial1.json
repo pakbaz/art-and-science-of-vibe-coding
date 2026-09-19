@@ -1,0 +1,81 @@
+{
+  "trial": {
+    "id": "2026-09-18-trial-1",
+    "n": 1,
+    "note": "One trial. Illustrative, not a benchmark. Repeat and report the median before making any quantified claim in public.",
+    "date": "2026-09-18",
+    "machine": "macOS 27.0, arm64, 16 CPUs",
+    "node": "v26.8.1",
+    "harness": "Copilot CLI sub-agent (NOT VS Code Copilot). Same harness for both runs.",
+    "model": "gpt-5.6-terra, identical for both runs",
+    "run_order": "A first, then B, sequentially. Never in parallel, to avoid CPU contention distorting elapsed time.",
+    "cache": "Cold for both: fresh workspace copies from the same baseline, fresh agent session, no prior context.",
+    "prompt": "Byte-identical for both runs except the workspace path. Neither run was shown the acceptance gate."
+  },
+
+  "held_constant": [
+    "Same baseline commit, copied into two separate workspaces",
+    "Same feature request text (demo/FEATURE-REQUEST.md)",
+    "Same model and same harness",
+    "Same machine, same Node version, no network dependency",
+    "Same final gate, executed by the operator after each run reported done"
+  ],
+
+  "difference": "Run B's workspace carries preparation: an AGENTS.md brief stating the overdue rule and the repo constraints, a curated 100-case fixture, and an `npm run test:fast` command that targets it. The preparation does not implement the feature.",
+
+  "runs": {
+    "A": {
+      "label": "Harness as-is",
+      "elapsed_seconds": 72.0,
+      "tool_calls": 4,
+      "test_command_runs": 1,
+      "inner_loop_command": "npm test (seeds 400,000 rows, ~1.36s per run)",
+      "gate_passed": false,
+      "gate_tests_total": 11,
+      "gate_tests_passed": 8,
+      "gate_tests_failed": 3,
+      "gate_failures": [
+        "overdue filter returns only unpaid invoices past the as-of date",
+        "overdue combines with the existing status filter",
+        "pagination stays at 25 rows per page"
+      ],
+      "root_cause": "Implemented overdue as `status === 'SENT' && dueDate < asOf`. Past-due DRAFT invoices are silently dropped. The feature request never defined which statuses still count as owed, so the agent guessed, and it guessed plausibly but wrong. All three gate failures trace to this one line."
+    },
+    "B": {
+      "label": "Harness optimized, prepared brief and fixture",
+      "elapsed_seconds": 140.7,
+      "tool_calls": 6,
+      "test_command_runs": 7,
+      "inner_loop_command": "npm run test:fast (100 curated rows, ~0.22s per run)",
+      "gate_passed": true,
+      "gate_tests_total": 11,
+      "gate_tests_passed": 11,
+      "gate_tests_failed": 0,
+      "gate_failures": [],
+      "root_cause": "Implemented overdue as `status !== 'PAID' && status !== 'CANCELLED' && dueDate < asOf`, matching the rule stated in AGENTS.md."
+    }
+  },
+
+  "preparation_accounting": {
+    "artifacts": ["AGENTS.md", "data/fixture-100.json", "data/store.js fixture support", "package.json test:fast script"],
+    "timed": false,
+    "disclosure": "Run B's preparation was authored before the trial and was NOT timed, so it is not included in B's 140.7s and cannot be added into a fair end-to-end total. This is a real gap in the accounting and must be stated out loud. To close it, time the preparation when you build it, then report both B alone and B plus preparation.",
+    "reusable": "The preparation is paid once and is reused by every later change to this repository, not just this feature."
+  },
+
+  "measured_inner_loop": {
+    "full_dataset_test_seconds": 1.36,
+    "curated_fixture_test_seconds": 0.22,
+    "ratio": "6.2x faster per iteration",
+    "caveat": "A faster inner loop is not a token saving and not a scale test. 100 rows says nothing about behaviour at 400,000."
+  },
+
+  "honest_reading": "Run A finished sooner in wall-clock time and did not pass the gate. Run B took roughly twice as long and passed. Speed was never the interesting variable here: the brief removed an ambiguity that Run A had to guess. If the only thing you measure is time to first 'done', Run A wins and ships a bug.",
+
+  "not_measured": [
+    "AI usage in tokens or credits. This client does not expose per-sub-agent usage, so there is no number to report. Do not estimate it.",
+    "Run B's preparation time.",
+    "Any repeated trial. n=1.",
+    "Browser, JavaScript, layout and accessibility behaviour. The gate asserts server-generated HTML only."
+  ]
+}

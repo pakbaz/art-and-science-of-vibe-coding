@@ -1,0 +1,12 @@
+{
+  "name": "invoice-admin",
+  "version": "1.4.0",
+  "private": true,
+  "description": "Internal invoice administration console",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "seed": "node data/store.js",
+    "test": "npm run seed && node --test test/"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "trial": {
+    "id": "2026-09-18-trial-2",
+    "n": 1,
+    "protocol": "Both runs were driven to the same finish line: implement, run the shared gate, feed any failure back verbatim, repeat until the gate is green. A run is finished only when all 11 gate tests pass.",
+    "why_this_supersedes_trial_1": "Trial 1 stopped each run at the point where the agent declared itself done. Run A declared done while still failing 3 of 11 gate tests, so its 72 s was never a time to completion. Measuring a run where it claims success, rather than where it passes acceptance, flatters whichever run gives up earliest. Trial 1 is kept in scoreboard-trial1.json for comparison.",
+    "date": "2026-09-18",
+    "machine": "macOS 27.0, arm64, 16 CPUs",
+    "node": "v26.8.1",
+    "harness": "Copilot CLI sub-agent, identical for both runs. NOT VS Code Copilot.",
+    "model": "gpt-5.6-terra, identical for both runs",
+    "run_order": "A first (21:16:38Z), then B (21:18:58Z), sequentially. Never in parallel, to keep CPU contention out of the elapsed times.",
+    "cache": "Cold for both: fresh workspaces rebuilt from the same baseline, fresh agent, no prior context.",
+    "prompt": "Byte-identical for both runs except the workspace path. Templates in demo/prompts/. Neither run was ever shown the gate source.",
+    "discarded": "One earlier Run A attempt (agent c20c46cf) was discarded and its workspace rebuilt, because a typo in the prompt broke the byte-identical control. It is excluded from every figure here."
+  },
+
+  "held_constant": [
+    "Same baseline, copied into two separate workspaces",
+    "Same feature request text (demo/FEATURE-REQUEST.md)",
+    "Same model, same harness, same machine",
+    "Same failure-feedback protocol and the same feedback wording",
+    "Same 11-test gate, executed by the operator, hidden from both runs"
+  ],
+
+  "difference": "Run B's workspace carries preparation: an AGENTS.md brief stating the overdue rule and the repo constraints, a curated 100-case fixture, and an npm run test:fast command that targets it. The preparation does not implement the feature.",
+
+  "runs": {
+    "A": {
+      "label": "Harness as-is",
+      "agent_id": "3c102ba7-b4a7-4874-807c-6e39f80c042a",
+      "turns_to_green": 2,
+      "wall_seconds_to_green": 131,
+      "model_seconds": 88.7,
+      "api_calls": 15,
+      "input_tokens": 640219,
+      "cache_read_tokens": 628660,
+      "cache_write_tokens": 11514,
+      "output_tokens": 5539,
+      "reasoning_tokens": 2423,
+      "ai_units": 22.11,
+      "inner_loop_command": "npm test (seeds 400,000 rows, ~1.36 s per run)",
+      "gate_turn_1": "FAILED, 3 of 11",
+      "gate_final": "PASSED, 11 of 11",
+      "turn_1_failures": [
+        "overdue filter returns only unpaid invoices past the as-of date",
+        "overdue combines with the existing status filter",
+        "pagination stays at 25 rows per page"
+      ],
+      "root_cause": "Turn 1 implemented overdue as status === 'SENT' && dueDate < asOf, which silently drops past-due DRAFT invoices. The feature request never defined which statuses still count as owed, so the agent guessed, plausibly and wrongly. All three failures trace to that one line. Turn 2 corrected it after being shown the gate output."
+    },
+    "B": {
+      "label": "Harness prepared, brief and fixture",
+      "agent_id": "4a4775e9-5ab8-404e-b0ec-d5e07a0685d2",
+      "turns_to_green": 1,
+      "wall_seconds_to_green": 72,
+      "model_seconds": 53.0,
+      "api_calls": 8,
+      "input_tokens": 332974,
+      "cache_read_tokens": 322572,
+      "cache_write_tokens": 10378,
+      "output_tokens": 3830,
+      "reasoning_tokens": 1406,
+      "ai_units": 13.65,
+      "inner_loop_command": "npm run test:fast (100 curated rows, ~0.22 s per run)",
+      "gate_turn_1": "PASSED, 11 of 11",
+      "gate_final": "PASSED, 11 of 11",
+      "turn_1_failures": [],
+      "root_cause": "Implemented overdue as status !== 'PAID' && status !== 'CANCELLED' && dueDate < asOf, matching the rule stated in AGENTS.md. No guess was required."
+    }
+  },
+
+  "ratios_to_the_same_gate": {
+    "turns": "A 2 vs B 1",
+    "wall_clock": "A 131 s vs B 72 s, A cost 1.8x",
+    "ai_units": "A 22.11 vs B 13.65, A cost 1.6x",
+    "api_calls": "A 15 vs B 8, A cost 1.9x",
+    "output_tokens": "A 5,539 vs B 3,830, A cost 1.4x"
+  },
+
+  "how_ai_usage_was_measured": {
+    "source": "Local session store table assistant_usage_events, filtered by the agent_id of each run.",
+    "fields": "input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, total_nano_aiu, duration_ms",
+    "unit": "AI units (AIU) = total_nano_aiu / 1e9. This is the billing unit, not a token count.",
+    "query": "SELECT agent_id, COUNT(*), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_tokens), SUM(total_nano_aiu)/1e9 FROM assistant_usage_events WHERE agent_id IN (...) GROUP BY agent_id",
+    "note": "The cloud session_usage view lags by days and returned nothing for this trial. The local table is written in real time and does record sub-agent usage against agent_id, which is why trial 1 wrongly reported usage as unavailable."
+  },
+
+  "measured_inner_loop": {
+    "full_dataset_test_seconds": 1.36,
+    "curated_fixture_test_seconds": 0.22,
+    "ratio": "6.2x faster per iteration",
+    "caveat": "A faster inner loop is not a token saving and not a scale test. 100 rows says nothing about behaviour at 400,000."
+  },
+
+  "honest_reading": "Driven to the same gate, the prepared run cost less on every axis measured: one turn instead of two, 72 s instead of 131 s, and 13.6 AI units instead of 22.1. The interesting part is why. Run A was not slower because its tests were slower. It was slower because it had to guess what overdue meant, guessed wrong, and needed a round trip through the gate to find out. The brief did not make the model faster. It removed an ambiguity the model could not resolve from the code.",
+
+  "still_not_measured": [
+    "Run B's preparation cost. It was authored before the trial and was not timed, so it is not inside B's 72 s and no fair end-to-end total can be computed from this trial. The preparation is reusable across every later change, but that is an argument, not a measurement.",
+    "Repeated trials. n=1. Repeat and report the median before quoting these figures publicly.",
+    "Browser, JavaScript, layout and accessibility behaviour. The gate asserts server-generated HTML only."
+  ]
+}

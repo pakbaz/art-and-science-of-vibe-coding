@@ -1,0 +1,14 @@
+.DS_Store
+._*
+~$*
+
+node_modules/
+coverage/
+.gate/
+*.gatebak
+*.log
+
+.env
+.env.*
+!.env.example
+!.env.sample
