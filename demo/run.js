@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
+const { isDeepStrictEqual } = require("node:util");
 
 const DEMO_ROOT = __dirname;
 const RUNS_ROOT = path.resolve(process.env.DEMO_RUNS_ROOT || path.join(DEMO_ROOT, ".runs"));
@@ -13,6 +14,8 @@ const FEATURE_PROMPT =
   "Work only in this repository.";
 const AS_OF = "2026-09-18";
 const LANES = new Set(["A", "B"]);
+const snapshots = new WeakMap();
+const heldLocks = new Map();
 
 class CliError extends Error {
   constructor(message, exitCode = 2) {
@@ -43,8 +46,8 @@ function parseArgs(argv) {
       continue;
     }
     const key = value.slice(2);
-    if (key === "json") {
-      flags.json = true;
+    if (["json", "parallel", "copilot"].includes(key)) {
+      flags[key] = true;
       continue;
     }
     if (index + 1 >= argv.length || argv[index + 1].startsWith("--")) {
@@ -101,16 +104,101 @@ function readState(flags) {
     throw new CliError(`unsupported or invalid state file: ${statePath}`);
   }
   state.statePath = statePath;
+  const snapshot = structuredClone(state);
+  delete snapshot.statePath;
+  snapshots.set(state, snapshot);
   return state;
+}
+
+function releaseLock(file) {
+  const fd = heldLocks.get(file);
+  if (fd === undefined) return;
+  try {
+    const original = fs.fstatSync(fd);
+    let current;
+    try {
+      current = fs.statSync(file);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    if (current) {
+      if (original.ino !== current.ino || original.dev !== current.dev) {
+        throw new CliError(`lock was replaced while in use: ${file}`);
+      }
+      fs.unlinkSync(file);
+    }
+  } finally {
+    heldLocks.delete(file);
+    fs.closeSync(fd);
+  }
+}
+
+function withLock(file, action, waitMs = 0) {
+  const deadline = Date.now() + waitMs;
+  let fd;
+  while (fd === undefined) {
+    try {
+      fd = fs.openSync(file, "wx");
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      if (Date.now() >= deadline) {
+        throw new CliError(
+          `another command holds lock ${file}. Wait for it to finish. ` +
+          "If it crashed, verify the PID in the lock file has exited before removing that lock.",
+        );
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  heldLocks.set(file, fd);
+  try {
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: now() }));
+    return action();
+  } finally {
+    releaseLock(file);
+  }
+}
+
+function mergeStateValue(base, updated, current, key = "") {
+  if (isDeepStrictEqual(updated, base)) return current;
+  if (isDeepStrictEqual(current, base)) return updated;
+  if (key === "events" && [base, updated, current].every(Array.isArray)) {
+    if (isDeepStrictEqual(updated.slice(0, base.length), base) &&
+        isDeepStrictEqual(current.slice(0, base.length), base)) {
+      return [...current, ...updated.slice(base.length)];
+    }
+  }
+  const object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if ([base, updated, current].every(object)) {
+    const merged = { ...current };
+    for (const field of new Set([...Object.keys(base), ...Object.keys(updated)])) {
+      const value = mergeStateValue(base[field], updated[field], current[field], key ? `${key}.${field}` : field);
+      if (value === undefined) delete merged[field];
+      else merged[field] = value;
+    }
+    return merged;
+  }
+  throw new CliError(`concurrent state change at ${key}; retry after the other command finishes`);
 }
 
 function writeState(state) {
   const target = state.statePath;
-  const temporary = `${target}.next-${process.pid}`;
-  const serializable = { ...state };
-  delete serializable.statePath;
-  fs.writeFileSync(temporary, `${JSON.stringify(serializable, null, 2)}\n`);
-  fs.renameSync(temporary, target);
+  withLock(`${target}.lock`, () => {
+    const serializable = { ...state };
+    delete serializable.statePath;
+    const snapshot = snapshots.get(state);
+    let merged = serializable;
+    if (fs.existsSync(target)) {
+      if (!snapshot) throw new CliError(`refusing to overwrite existing state: ${target}`);
+      const current = JSON.parse(fs.readFileSync(target, "utf8"));
+      merged = mergeStateValue(snapshot, serializable, current);
+    }
+    const temporary = `${target}.next-${process.pid}`;
+    fs.writeFileSync(temporary, `${JSON.stringify(merged, null, 2)}\n`);
+    fs.renameSync(temporary, target);
+    Object.assign(state, merged);
+    snapshots.set(state, structuredClone(merged));
+  }, 5000);
 }
 
 function run(command, args, options = {}) {
@@ -212,6 +300,8 @@ function prepare(flags) {
   if (fs.existsSync(trialRoot)) {
     throw new CliError(`trial already exists; refusing to overwrite: ${trialRoot}`);
   }
+  fs.mkdirSync(RUNS_ROOT, { recursive: true });
+  fs.mkdirSync(trialRoot);
 
   const started = process.hrtime.bigint();
   const sourceRepo = path.join(trialRoot, "source");
@@ -235,6 +325,7 @@ function prepare(flags) {
   const state = {
     version: 1,
     trialId,
+    executionMode: flags.parallel ? "parallel" : "sequential",
     createdAt: now(),
     statePath,
     trialRoot,
@@ -260,6 +351,7 @@ function prepare(flags) {
   writeState(state);
   return {
     trialId,
+    executionMode: state.executionMode,
     sourceRepo,
     statePath,
     baseCommit,
@@ -393,7 +485,7 @@ function createWorktrees(state) {
     }
     fs.mkdirSync(path.dirname(workspace), { recursive: true });
     git(state.sourceRepo, ["worktree", "add", "--quiet", "--detach", workspace, state.baseCommit]);
-    created.push(attach(state, lane, workspace, `cli-rehearsal-${lane}`));
+    created.push(attach(state, lane, workspace, crypto.randomUUID()));
     state = readState({ state: state.statePath });
   }
   return { created, alreadyAttached: 2 - created.length };
@@ -403,11 +495,13 @@ function startLane(state, lane) {
   const record = state.lanes[lane];
   if (!record.workspace) throw new CliError(`attach lane ${lane} before starting it`);
   if (record.status !== "ready") throw new CliError(`lane ${lane} cannot start from status ${record.status}`);
+  exactRealDirectory(record.workspace, `lane ${lane} workspace`);
   const other = lane === "A" ? "B" : "A";
-  if (state.lanes[other].status === "running") {
+  if (state.executionMode !== "parallel" && state.lanes[other].status === "running") {
     throw new CliError(`lane ${other} is still running; runs must be sequential`);
   }
-  if (lane === "B" && !["passed", "incomplete"].includes(state.lanes.A.status)) {
+  if (state.executionMode !== "parallel" && lane === "B" &&
+      !["passed", "incomplete"].includes(state.lanes.A.status)) {
     throw new CliError("finish lane A (pass or mark incomplete) before starting lane B");
   }
   record.status = "running";
@@ -532,6 +626,7 @@ function fullDatasetCount(dataFile) {
 function checkLane(state, lane) {
   const record = state.lanes[lane];
   if (record.status !== "running") throw new CliError(`lane ${lane} is not running`);
+  exactRealDirectory(record.workspace, `lane ${lane} workspace`);
   const attemptNumber = record.attempts.length + 1;
   const checkStartedAt = now();
 
@@ -817,6 +912,10 @@ function laneMetrics(state, lane) {
 function compare(state) {
   const comparison = {
     trialId: state.trialId,
+    executionMode: state.executionMode || "sequential",
+    resourceContention: state.executionMode === "parallel"
+      ? "Parallel lanes share CPU, disk and network resources; wall times are not an isolated latency benchmark."
+      : "Sequential lanes avoid intentional overlap; host load and presenter pauses still affect wall time.",
     sourcePreparationMs: state.preparation.sourceMs,
     preparationTimingScope:
       "workspace materialization/overlay only; authoring and host-session provisioning not measured",
@@ -860,6 +959,8 @@ function formatInsights(insights) {
 function printComparison(value) {
   const lines = [
     `Trial ${value.trialId}`,
+    `Execution mode: ${value.executionMode}`,
+    value.resourceContention,
     `Shared source preparation: ${formatMs(value.sourcePreparationMs)}`,
     `Preparation timing scope: ${value.preparationTimingScope}`,
     "Reusable setup authoring: unknown",
@@ -892,19 +993,75 @@ function help() {
   return `Honest invoice A/B demo runner
 
 Usage:
-  node demo/run.js prepare [--id ID] [--json]
+  node demo/run.js prepare [--id ID] [--parallel] [--json]
   node demo/run.js worktrees --trial ID [--json]
   node demo/run.js attach A|B WORKSPACE --session ID --trial ID [--json]
-  node demo/run.js start A|B --trial ID [--json]
+  node demo/run.js start A|B --trial ID [--copilot | --json]
   node demo/run.js check A|B --trial ID [--json]
-  node demo/run.js feedback A|B --trial ID
-  node demo/run.js twtty B --trial ID
+  node demo/run.js feedback A|B --trial ID [--copilot]
+  node demo/run.js resume A|B --trial ID [--copilot]
+  node demo/run.js twtty B --trial ID [--copilot | --json]
   node demo/run.js mark-incomplete A|B --reason TEXT --trial ID
   node demo/run.js insights A|B --provenance TEXT --reference TEXT [metrics...] --trial ID
   node demo/run.js compare --trial ID [--json]
 
 Use --state PATH instead of --trial ID after prepare. "record" aliases "insights".
 prepare creates only a source repository; it never launches an agent or CLI.`;
+}
+
+function preflightCopilot(state, lane, flags) {
+  if (flags.json) throw new CliError("--copilot cannot be combined with --json");
+  const record = state.lanes[lane];
+  if (!record.workspace) throw new CliError(`attach lane ${lane} before launching Copilot`);
+  exactRealDirectory(record.workspace, `lane ${lane} workspace`);
+  if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(record.sessionId || "")) {
+    throw new CliError("Copilot requires a UUID session ID; prepare a new CLI trial with worktrees");
+  }
+  const help = run("copilot", ["--help"]);
+  if (help.status !== 0) {
+    throw new CliError(`Copilot CLI is unavailable: ${help.error || help.stderr || help.stdout}`, 1);
+  }
+  for (const flag of [
+    "--prompt", "--session-id", "--model", "--reasoning-effort", "--context",
+    "--allow-all", "--no-ask-user", "--usage-output-file",
+  ]) {
+    if (!help.stdout.includes(flag)) throw new CliError(`installed Copilot CLI does not support ${flag}`);
+  }
+}
+
+function launchCopilot(state, lane, prompt) {
+  const record = state.lanes[lane];
+  const usageFile = path.join(state.trialRoot, `usage-${lane}-${crypto.randomUUID()}.json`);
+  process.stdout.write(`Running lane ${lane}: gpt-5.6-sol, high, long_context, --allow-all\n`);
+  const result = spawnSync("copilot", [
+    "-C", record.workspace,
+    "--session-id", record.sessionId,
+    "--model", "gpt-5.6-sol",
+    "--reasoning-effort", "high",
+    "--context", "long_context",
+    "--allow-all", "--no-ask-user",
+    "--usage-output-file", usageFile,
+    "--prompt", prompt,
+  ], { cwd: record.workspace, stdio: "inherit" });
+  const exitCode = result.status ?? 1;
+  state.events.push({
+    type: "copilot",
+    lane,
+    at: now(),
+    sessionId: record.sessionId,
+    usageFile,
+    usageRecorded: fs.existsSync(usageFile),
+    exitCode,
+    signal: result.signal || null,
+  });
+  writeState(state);
+  if (exitCode !== 0) {
+    throw new CliError(
+      `Copilot exited with status ${exitCode}${result.error ? `: ${result.error.message}` : ""}. ` +
+      `Lane ${lane} remains running; use resume after resolving the error.`,
+      exitCode,
+    );
+  }
 }
 
 function output(value, json) {
@@ -926,7 +1083,7 @@ function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === "prepare") {
-    assertAllowedFlags(flags, ["id", "json"]);
+    assertAllowedFlags(flags, ["id", "json", "parallel"]);
     if (positionals.length !== 1) throw new CliError("prepare takes no positional arguments");
     output(prepare(flags), flags.json);
     return;
@@ -936,7 +1093,9 @@ function main(argv = process.argv.slice(2)) {
   if (command === "worktrees") {
     assertAllowedFlags(flags, ["state", "trial", "json"]);
     if (positionals.length !== 1) throw new CliError("worktrees takes no positional arguments");
-    output(createWorktrees(state), flags.json);
+    withLock(`${state.statePath}.A.lock`, () =>
+      withLock(`${state.statePath}.B.lock`, () =>
+        output(createWorktrees(readState(flags)), flags.json)));
     return;
   }
   if (command === "compare") {
@@ -948,14 +1107,22 @@ function main(argv = process.argv.slice(2)) {
   }
 
   const lane = requireLane(positionals[1]);
+  withLock(`${state.statePath}.${lane}.lock`, () =>
+    runLaneCommand(command, lane, positionals, flags, readState(flags)));
+}
+
+function runLaneCommand(command, lane, positionals, flags, state) {
   if (command === "attach") {
     assertAllowedFlags(flags, ["state", "trial", "session", "json"]);
     if (positionals.length !== 3) throw new CliError("attach requires A|B and WORKSPACE");
     output(attach(state, lane, positionals[2], flags.session), flags.json);
   } else if (command === "start") {
-    assertAllowedFlags(flags, ["state", "trial", "json"]);
+    assertAllowedFlags(flags, ["state", "trial", "json", "copilot"]);
     if (positionals.length !== 2) throw new CliError("start requires A|B");
-    output(startLane(state, lane), flags.json);
+    if (flags.copilot) preflightCopilot(state, lane, flags);
+    const started = startLane(state, lane);
+    if (flags.copilot) launchCopilot(state, lane, started.prompt);
+    else output(started, flags.json);
   } else if (command === "check") {
     assertAllowedFlags(flags, ["state", "trial", "json"]);
     if (positionals.length !== 2) throw new CliError("check requires A|B");
@@ -982,14 +1149,33 @@ function main(argv = process.argv.slice(2)) {
     }
     if (!result.attempt.passed) process.exitCode = 1;
   } else if (command === "feedback") {
-    assertAllowedFlags(flags, ["state", "trial"]);
+    assertAllowedFlags(flags, ["state", "trial", "copilot"]);
     if (positionals.length !== 2) throw new CliError("feedback requires A|B");
-    output(feedback(state, lane), false);
+    const prompt = feedback(state, lane);
+    if (flags.copilot) {
+      if (state.lanes[lane].status !== "running" || state.lanes[lane].attempts.at(-1)?.passed) {
+        throw new CliError("Copilot feedback requires a running lane with an actual failed check");
+      }
+      preflightCopilot(state, lane, flags);
+      launchCopilot(state, lane, prompt);
+    } else output(prompt, false);
+  } else if (command === "resume") {
+    assertAllowedFlags(flags, ["state", "trial", "copilot"]);
+    if (positionals.length !== 2) throw new CliError("resume requires A|B");
+    if (state.lanes[lane].status !== "running") throw new CliError(`lane ${lane} is not running`);
+    const prompt = "Continue implementing the feature in FEATURE-REQUEST.md from the current state. " +
+      "Preserve existing work, run the checks, and work only in this repository.";
+    if (flags.copilot) {
+      preflightCopilot(state, lane, flags);
+      launchCopilot(state, lane, prompt);
+    } else output(prompt, false);
   } else if (command === "twtty") {
-    assertAllowedFlags(flags, ["state", "trial", "json"]);
+    assertAllowedFlags(flags, ["state", "trial", "json", "copilot"]);
     if (positionals.length !== 2) throw new CliError("twtty requires B");
+    if (flags.copilot) preflightCopilot(state, lane, flags);
     const intervention = twtty(state, lane);
-    output(flags.json ? intervention : intervention.prompt, flags.json);
+    if (flags.copilot) launchCopilot(state, lane, intervention.prompt);
+    else output(flags.json ? intervention : intervention.prompt, flags.json);
   } else if (command === "mark-incomplete") {
     assertAllowedFlags(flags, ["state", "trial", "reason", "json"]);
     if (positionals.length !== 2) throw new CliError("mark-incomplete requires A|B");
@@ -1021,6 +1207,12 @@ function main(argv = process.argv.slice(2)) {
 }
 
 if (require.main === module) {
+  for (const [signal, exitCode] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+    process.once(signal, () => {
+      for (const file of [...heldLocks.keys()]) releaseLock(file);
+      process.exit(exitCode);
+    });
+  }
   try {
     main();
   } catch (error) {

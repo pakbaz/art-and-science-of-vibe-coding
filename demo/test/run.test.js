@@ -4,7 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { spawnSync } = require("node:child_process");
+const { spawn, spawnSync } = require("node:child_process");
 
 const DEMO_ROOT = path.resolve(__dirname, "..");
 const REPO_ROOT = path.resolve(DEMO_ROOT, "..");
@@ -20,6 +20,7 @@ function cli(args, options = {}) {
     INVOICE_COUNT: "17",
     INVOICE_FIXTURE: "data/fixture-100.json",
     INVOICE_FAST: "1",
+    ...options.env,
   };
   delete env.NODE_TEST_CONTEXT;
   const result = spawnSync(process.execPath, [RUNNER, ...args], {
@@ -35,6 +36,20 @@ function cli(args, options = {}) {
     );
   }
   return result;
+}
+
+function cliAsync(args) {
+  const env = { ...process.env, DEMO_RUNS_ROOT: sandbox };
+  delete env.NODE_TEST_CONTEXT;
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [RUNNER, ...args], { cwd: REPO_ROOT, env });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 function readState(statePath) {
@@ -269,6 +284,171 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
     cwd: info.sourceRepo,
     encoding: "utf8",
   });
+
+  await t.test("parallel mode permits either lane first and retains simultaneous starts", async () => {
+    const info = JSON.parse(cli(["prepare", "--id", "parallel-start", "--parallel", "--json"]).stdout);
+    cli(["worktrees", "--trial", info.trialId]);
+    const initial = readState(info.statePath);
+    for (const lane of ["A", "B"]) {
+      assert.match(initial.lanes[lane].sessionId, /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/);
+    }
+    assert.notEqual(initial.lanes.A.sessionId, initial.lanes.B.sessionId);
+    const results = await Promise.all(["B", "A"].map((lane) =>
+      cliAsync(["start", lane, "--trial", info.trialId, "--json"]),
+    ));
+    for (const result of results) assert.equal(result.status, 0, result.stderr);
+    const state = readState(info.statePath);
+    assert.equal(state.executionMode, "parallel");
+    assert.equal(state.lanes.A.status, "running");
+    assert.equal(state.lanes.B.status, "running");
+    assert.equal(state.events.filter((event) => event.type === "started").length, 2);
+    const report = JSON.parse(cli(["compare", "--trial", info.trialId, "--json"]).stdout);
+    assert.equal(report.executionMode, "parallel");
+    assert.match(report.resourceContention, /share.*CPU|shared.*resources/i);
+  });
+
+  await t.test("concurrent checks preserve both lane histories and full datasets", async () => {
+    const info = JSON.parse(cli(["prepare", "--id", "parallel-check", "--json"]).stdout);
+    cli(["worktrees", "--trial", info.trialId]);
+    const state = readState(info.statePath);
+    state.executionMode = "parallel";
+    for (const lane of ["A", "B"]) {
+      state.lanes[lane].status = "running";
+      state.lanes[lane].startedAt = new Date().toISOString();
+      const marker = path.join(sandbox, `check-${lane}.ready`);
+      const other = path.join(sandbox, `check-${lane === "A" ? "B" : "A"}.ready`);
+      fs.writeFileSync(path.join(state.lanes[lane].workspace, "test", "barrier.test.js"), `
+  const test = require("node:test");
+  const fs = require("node:fs");
+  test("both full suites execute concurrently", async () => {
+    fs.writeFileSync(${JSON.stringify(marker)}, "ready");
+    const deadline = Date.now() + 10000;
+    while (!fs.existsSync(${JSON.stringify(other)})) {
+      if (Date.now() > deadline) throw new Error("the other lane did not reach its full suite");
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    await new Promise(resolve => setTimeout(resolve, 150));
+  });
+  `);
+    }
+    fs.writeFileSync(info.statePath, JSON.stringify(state));
+    const results = await Promise.all(["A", "B"].map((lane) =>
+      cliAsync(["check", lane, "--trial", info.trialId, "--json"]),
+    ));
+    for (const result of results) {
+      assert.equal(result.status, 1, result.stderr);
+      const checked = JSON.parse(result.stdout);
+      assert.equal(checked.attempt.full.exitCode, 0, checked.fullOutput);
+      assert.equal(checked.attempt.fullDatasetCount, 400000);
+      assert.equal(checked.attempt.acceptance.exitCode, 1);
+    }
+    const saved = readState(info.statePath);
+    for (const lane of ["A", "B"]) {
+      assert.equal(saved.lanes[lane].attempts.length, 1, `lost ${lane}'s attempt`);
+      assert.equal(saved.lanes[lane].attempts[0].data.acceptancePreservedData, true);
+    }
+    assert.equal(saved.events.filter((event) => event.type === "checked").length, 2);
+    for (const lane of ["A", "B"]) {
+      writeReferenceImplementation(saved.lanes[lane].workspace);
+      fs.unlinkSync(path.join(sandbox, `check-${lane}.ready`));
+    }
+    const passing = await Promise.all(["A", "B"].map((lane) =>
+      cliAsync(["check", lane, "--trial", info.trialId, "--json"]),
+    ));
+    for (const result of passing) {
+      assert.equal(result.status, 0, result.stderr);
+      const checked = JSON.parse(result.stdout);
+      assert.equal(checked.attempt.fullDatasetCount, 400000);
+      assert.equal(checked.attempt.acceptance.exitCode, 0);
+    }
+    const completed = readState(info.statePath);
+    for (const lane of ["A", "B"]) {
+      assert.equal(completed.lanes[lane].status, "passed");
+      assert.equal(completed.lanes[lane].attempts.length, 2);
+      assert.ok(completed.lanes[lane].stoppedAt);
+    }
+    assert.equal(completed.events.filter((event) => event.type === "checked").length, 4);
+  });
+
+  await t.test("same-lane lock rejects overlapping commands without changing state", () => {
+    const info = JSON.parse(cli(["prepare", "--id", "lane-lock", "--json"]).stdout);
+    cli(["worktrees", "--trial", info.trialId]);
+    const before = fs.readFileSync(info.statePath, "utf8");
+    const lock = `${info.statePath}.A.lock`;
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+    try {
+      const result = cli(["start", "A", "--trial", info.trialId], { allowFailure: true });
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, /lock|another command/i);
+      assert.equal(fs.readFileSync(info.statePath, "utf8"), before);
+    } finally {
+      fs.unlinkSync(lock);
+    }
+    cli(["start", "A", "--trial", info.trialId]);
+  });
+
+  await t.test("copilot launching pins settings, resumes identity, and reports failures honestly", () => {
+    const info = JSON.parse(cli(["prepare", "--id", "cli-launch", "--parallel", "--json"]).stdout);
+    cli(["worktrees", "--trial", info.trialId]);
+    const state = readState(info.statePath);
+    const bin = path.join(sandbox, "bin");
+    const calls = path.join(sandbox, "copilot-calls.jsonl");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "copilot"), `#!/usr/bin/env node
+  const fs = require("node:fs");
+  const args = process.argv.slice(2);
+  if (args.includes("--help")) {
+    console.log("--prompt --session-id --model --reasoning-effort --context --allow-all --no-ask-user --usage-output-file");
+    process.exit(0);
+  }
+  fs.appendFileSync(process.env.TEST_COPILOT_CALLS, JSON.stringify(args) + "\\n");
+  process.exit(Number(process.env.TEST_COPILOT_EXIT || 0));
+  `, { mode: 0o755 });
+    const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, TEST_COPILOT_CALLS: calls };
+    const mixedOutput = cli(["start", "A", "--trial", info.trialId, "--copilot", "--json"], {
+      env, allowFailure: true,
+    });
+    assert.notEqual(mixedOutput.status, 0);
+    assert.match(mixedOutput.stderr, /cannot be combined/);
+    assert.equal(readState(info.statePath).lanes.A.status, "ready");
+    assert.equal(fs.existsSync(calls), false);
+    const result = cli(["start", "A", "--trial", info.trialId, "--copilot"], { env });
+    assert.equal(result.status, 0);
+    let invocations = fs.readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+    const args = invocations[0];
+    const value = (flag) => args[args.indexOf(flag) + 1];
+    assert.equal(value("--session-id"), state.lanes.A.sessionId);
+    assert.equal(value("-C"), state.lanes.A.workspace);
+    assert.equal(value("--prompt"), state.prompt);
+    assert.equal(value("--model"), "gpt-5.6-sol");
+    assert.equal(value("--reasoning-effort"), "high");
+    assert.equal(value("--context"), "long_context");
+    assert.ok(args.includes("--allow-all"));
+    assert.ok(args.includes("--no-ask-user"));
+    assert.ok(!args.includes("--interactive"));
+    assert.ok(value("--usage-output-file").startsWith(path.dirname(info.statePath) + path.sep));
+    assert.equal(readState(info.statePath).lanes.A.status, "running");
+    assert.equal(readState(info.statePath).lanes.A.attempts.length, 0);
+
+    const earlyFeedback = cli(["feedback", "A", "--trial", info.trialId, "--copilot"], { env, allowFailure: true });
+    assert.notEqual(earlyFeedback.status, 0);
+    assert.equal(fs.readFileSync(calls, "utf8").trim().split("\n").length, 1);
+    const startTime = readState(info.statePath).lanes.A.startedAt;
+    cli(["resume", "A", "--trial", info.trialId, "--copilot"], { env });
+    invocations = fs.readFileSync(calls, "utf8").trim().split("\n").map(JSON.parse);
+    assert.equal(invocations[1][invocations[1].indexOf("--session-id") + 1], state.lanes.A.sessionId);
+    assert.match(invocations[1][invocations[1].indexOf("--prompt") + 1], /^Continue/);
+    assert.notEqual(invocations[1][invocations[1].indexOf("--usage-output-file") + 1], value("--usage-output-file"));
+    assert.equal(readState(info.statePath).lanes.A.startedAt, startTime);
+
+    const failure = cli(["start", "B", "--trial", info.trialId, "--copilot"], {
+      env: { ...env, TEST_COPILOT_EXIT: "7" }, allowFailure: true,
+    });
+    assert.equal(failure.status, 7);
+    assert.match(failure.stderr, /Copilot.*7/);
+    assert.equal(readState(info.statePath).lanes.B.status, "running");
+    assert.equal(readState(info.statePath).lanes.B.stoppedAt, null);
+  });
   assert.equal(removeDirty.status, 0, `${removeDirty.stdout}\n${removeDirty.stderr}`);
 
   const duplicatePrepared = JSON.parse(
@@ -356,6 +536,31 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
   const bFirst = cli(["start", "B", "--trial", "trial-one"], { allowFailure: true });
   assert.notEqual(bFirst.status, 0);
   assert.match(bFirst.stderr, /finish lane A/);
+
+  await t.test("deleted worktrees cannot start a new timer", () => {
+    const prepared = JSON.parse(cli(["prepare", "--id", "deleted-worktree", "--parallel", "--json"]).stdout);
+    cli(["worktrees", "--trial", prepared.trialId]);
+    const state = readState(prepared.statePath);
+    const removed = spawnSync("git", ["worktree", "remove", state.lanes.A.workspace], {
+      cwd: prepared.sourceRepo, encoding: "utf8",
+    });
+    assert.equal(removed.status, 0, removed.stderr);
+    const result = cli(["start", "A", "--trial", prepared.trialId], { allowFailure: true });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /workspace.*does not exist/);
+    const saved = readState(prepared.statePath);
+    assert.equal(saved.lanes.A.status, "ready");
+    assert.equal(saved.lanes.A.startedAt, null);
+    cli(["start", "B", "--trial", prepared.trialId]);
+    const removedB = spawnSync("git", ["worktree", "remove", "--force", state.lanes.B.workspace], {
+      cwd: prepared.sourceRepo, encoding: "utf8",
+    });
+    assert.equal(removedB.status, 0, removedB.stderr);
+    const checked = cli(["check", "B", "--trial", prepared.trialId], { allowFailure: true });
+    assert.notEqual(checked.status, 0);
+    assert.match(checked.stderr, /workspace.*does not exist/);
+    assert.equal(readState(prepared.statePath).lanes.B.attempts.length, 0);
+  });
 
   await t.test("B prep fast command runs the repository suite", () => {
     const result = spawnSync("npm", ["run", "test:fast"], {

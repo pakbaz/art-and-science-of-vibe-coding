@@ -1,154 +1,282 @@
 # Live A/B demo: overdue invoices
 
-This is an honest, repeatable comparison of two real coding-agent sessions
-starting from the same invoice application commit.
+This is an honest comparison of two coding-agent sessions starting from the
+same invoice application commit.
 
-- **A** gets a normal repository and the short feature prompt. It may still
-  receive globally injected user instructions and tool grants from the host.
-- **B** gets the same commit and prompt, plus a documented `AGENTS.md` workflow,
-  a curated 100-row fixture, and `npm run test:fast`.
-- Both must pass the repository's full test command and an external acceptance
-  suite. A run does not finish when an agent says it is done.
+- **A** gets the baseline repository and shared feature request.
+- **B** gets the same commit and request, plus `AGENTS.md`, a curated 100-row
+  fixture, and `npm run test:fast`.
+- Both must pass the protected full test path and the same independent
+  feature/HTTP gate. An agent saying it is done is not a pass.
 
-Nothing here guarantees B will win. Report incomplete runs and non-comparable
-metrics as such.
+Better preparation is the hypothesis, not a guarantee that B wins. Report
+incomplete runs and unknown or non-comparable metrics honestly.
 
-## Requirements
+## Requirements and safety
 
-- Node.js and Git
-- No npm install and no external packages
-- Two real child sessions created by the presenter with identical model,
-  reasoning, and tool grants
+- Node.js, npm, and Git; the demo has no external packages to install
+- A host that can create nested worktree sessions for the app workflow
+- An authenticated Copilot CLI for the terminal workflow
+- The same model, reasoning, context, and actual host grants for both lanes
 
-## Runner contract
+Worktrees isolate changes, not filesystem access or machine resources. Parallel
+lanes share CPU, disk, and network, so they are useful for a live side-by-side
+demo but not a controlled latency benchmark. Prefer the default sequential mode
+for a cleaner time comparison; use `--parallel` when both should work at once.
+
+`--allow-all` lets the Copilot CLI shell use all available tools, paths, and
+URLs. Use it only in a trusted environment. It does not bypass authentication,
+organization or service policy, or sandbox boundaries. Putting `--allow-all`
+in an app-chat prompt grants nothing; give both app sessions equal real host
+permissions and surface any required user action.
+
+## Recommended: prompts for the MAIN chat
+
+Paste these prompts into **MAIN**, not A or B. MAIN coordinates but never
+implements. The detailed rules and app API specifics live in
+[`prompts/main-session-orchestration.md`](prompts/main-session-orchestration.md).
+
+### 1. Prepare two fresh sessions
+
+```text
+Prepare a completely new parallel invoice A/B trial. First read
+demo/prompts/main-session-orchestration.md and follow its setup contract exactly.
+Coordinate only in MAIN; do not implement the feature or start either timer.
+Create the app-only project and two NEW NESTED worktree sessions from one commit.
+Give both GPT-5.6 Sol, high reasoning, long_context, and equal real host grants.
+Use the contract's identical readiness kickoff; wait idle and verify pristine.
+Attach their actual IDs and paths, applying the preparation only to B.
+Never reuse deleted sessions, worktrees, IDs, or branches.
+Return the trial ID, child links, paths, verification, and any manual action.
+```
+
+Readiness turns are setup activity and may be included in session-wide
+Insights. Do not claim otherwise unless the host exposes a separate split.
+
+### 2. Start A
+
+Replace `<TRIAL_ID>` with the new trial ID.
+
+```text
+For trial <TRIAL_ID>, follow the contract to start A. Start its timer
+immediately before sending this exact prompt to the new A child:
+
+Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Work only in this repository.
+
+Add no coaching, do not implement in MAIN or expose the gate, and return
+immediately after delivery with the child link and runner status.
+```
+
+### 3. Start B in parallel
+
+```text
+For trial <TRIAL_ID>, start B now under the contract; do not wait for A.
+Start its timer immediately before sending this exact prompt to the new B child:
+
+Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Work only in this repository.
+
+Add no coaching, do not implement in MAIN or expose the gate, and return
+immediately after delivery with the child link and runner status.
+```
+
+### 4. Check and fix both
+
+```text
+Check both lanes for trial <TRIAL_ID> under the contract. Monitor independently
+and wait for each child to become idle before checking its worktree. Run the
+same protected 400,000-invoice full test and independent feature/HTTP gate;
+never reveal its source. Send exact generated failures to the same child with
+no extra coaching, then recheck when idle. Mark genuine stagnation incomplete.
+Use TWTTY for B only after a real failed check and genuine stall. Continue until
+both lanes pass or are honestly marked incomplete.
+```
+
+### 5. Report observed results
+
+```text
+Finish trial <TRIAL_ID> under the contract using only these two new children.
+Record real Insights with exact units and provenance, then compare completion,
+corrections, wall time, active command time, and observed cost or credits.
+Keep workspace/readiness setup separate; do not call it end-to-end or claim
+session-wide Insights excludes it. Leave unknowns null, never invent or compare
+unlike values, and do not imply B must win. If Insights is inaccessible, ask me
+for the real displayed values.
+```
+
+## Portable terminal workflow
+
+This path runs real Copilot CLI sessions; it does not create nested app
+sessions. `worktrees` creates or attaches separate CLI worktrees and reserves
+distinct session UUIDs. The actual sessions begin at `start --copilot`.
+
+### 1. Prepare a fresh parallel trial
+
+From the repository root:
 
 ```bash
+node demo/run.js prepare --parallel --json
+node demo/run.js worktrees --trial PASTE_NEW_TRIAL_ID --json
+```
+
+Copy the new `trialId` printed by `prepare` into the second command. The
+`worktrees` JSON identifies both paths and their distinct reserved UUIDs.
+
+### 2. Start both terminals
+
+Variables do not transfer between terminals. Set the **same new trial ID**
+separately in each.
+
+Terminal A:
+
+```bash
+TRIAL_ID='PASTE_THE_SAME_NEW_TRIAL_ID'
+node demo/run.js start A --trial "$TRIAL_ID" --copilot
+node demo/run.js check A --trial "$TRIAL_ID"
+```
+
+Terminal B:
+
+```bash
+TRIAL_ID='PASTE_THE_SAME_NEW_TRIAL_ID'
+node demo/run.js start B --trial "$TRIAL_ID" --copilot
+node demo/run.js check B --trial "$TRIAL_ID"
+```
+
+Either lane may start first. Run both `start` commands at about the same time.
+Each starts its timer, launches `copilot -p` in its worktree, and returns to the
+shell when the turn ends. Both use `gpt-5.6-sol`, high reasoning,
+`long_context`, `--allow-all`, `--no-ask-user`, their reserved UUID, and a
+unique usage JSON path.
+
+Only `check_passed=true` is a pass.
+
+### 3. Handle failures or interruption
+
+After a failed check, send its exact failure to the same CLI session and check
+again:
+
+```bash
+node demo/run.js feedback A --trial "$TRIAL_ID" --copilot
+node demo/run.js check A --trial "$TRIAL_ID"
+```
+
+Use `B` in B's terminal. Resume an interrupted active lane without resetting
+its timer:
+
+```bash
+node demo/run.js resume A --trial "$TRIAL_ID" --copilot
+```
+
+For B only, after a real failed check and genuine stagnation:
+
+```bash
+node demo/run.js twtty B --trial "$TRIAL_ID" --copilot
+node demo/run.js check B --trial "$TRIAL_ID"
+```
+
+After a bounded retry limit, record the blocker:
+
+```bash
+node demo/run.js mark-incomplete A \
+  --reason "Describe the observed blocker" \
+  --trial "$TRIAL_ID"
+```
+
+### 4. Record Insights and compare
+
+Use each lane's final CLI usage output or unique saved JSON. Do not sum
+cumulative snapshots from resumes.
+
+```bash
+node demo/run.js insights A --trial "$TRIAL_ID" \
+  --provenance "Copilot CLI usage output" \
+  --reference "ACTUAL_SESSION_ID_OR_USAGE_JSON_PATH" \
+  --model "gpt-5.6-sol" \
+  --ai-credit-value ACTUAL_VALUE \
+  --ai-credit-unit ACTUAL_UNIT
+
+node demo/run.js compare --trial "$TRIAL_ID"
+```
+
+Repeat `insights` for B with B's observed values. Omit unavailable flags so
+their values remain `null`.
+
+## Runner reference
+
+```text
 node demo/run.js help
-node demo/run.js prepare --id rehearsal-01 --json
-node demo/run.js attach A /absolute/worktree/A --session SESSION_A --trial rehearsal-01
-node demo/run.js attach B /absolute/worktree/B --session SESSION_B --trial rehearsal-01
-node demo/run.js start A --trial rehearsal-01
-node demo/run.js check A --trial rehearsal-01
-node demo/run.js feedback A --trial rehearsal-01
-node demo/run.js mark-incomplete A --reason "bounded retry limit reached" --trial rehearsal-01
-node demo/run.js start B --trial rehearsal-01
-node demo/run.js check B --trial rehearsal-01
-node demo/run.js twtty B --trial rehearsal-01
-node demo/run.js insights A --trial rehearsal-01 \
-  --provenance "child session Insights" --reference "SESSION_A" \
-  --model "MODEL" --ai-credit-value 12.3 --ai-credit-unit AIU \
-  --input-tokens 1000 --output-tokens 500 --cache-read-tokens 300 \
-  --api-calls 8 --model-runtime-seconds 42.1
-node demo/run.js compare --trial rehearsal-01
+node demo/run.js prepare [--id ID] [--parallel] [--json]
+node demo/run.js worktrees --trial ID --json
+node demo/run.js attach A|B WORKTREE --session SESSION_ID --trial ID
+node demo/run.js start A|B --trial ID [--copilot]
+node demo/run.js check A|B --trial ID
+node demo/run.js feedback A|B --trial ID [--copilot]
+node demo/run.js resume A|B --trial ID [--copilot]
+node demo/run.js twtty B --trial ID [--copilot]
+node demo/run.js mark-incomplete A|B --reason TEXT --trial ID
+node demo/run.js insights A|B --trial ID [metric flags]
+node demo/run.js compare --trial ID
 ```
 
-`record` is an alias for `insights`; `--state /absolute/path/state.json` can
-replace `--trial ID`.
+`record` aliases `insights`. `--state /absolute/path/state.json` can replace
+`--trial ID` where supported.
 
-### `prepare`
+### Setup and isolation
 
-Creates a unique ignored directory at `demo/.runs/<id>` and an app-only Git
-repository in `source/`. The source history contains only the baseline app,
-README, and complete `FEATURE-REQUEST.md`. It has no gate, prep, results, deck,
-or opposite lane. Existing trials are never overwritten.
+`prepare` creates a unique ignored `demo/.runs/<id>` directory and app-only Git
+repository containing the baseline, README, and feature request—not the gate,
+prep, results, deck, or opposite lane. Existing trials are never overwritten.
 
-`--json` prints absolute `sourceRepo` and `statePath` values for orchestration.
-The command does not launch an agent or create an app child session.
+Default mode enforces A then B. `--parallel` allows either to start first and
+both to remain active; shared-state and per-lane locks protect concurrent state.
 
-The exact JSON fields are:
+`prepare --json` reports the trial ID, source and state paths, base commit, and
+shared prompt. It creates no project, child session, worktree, or agent.
 
-```json
-{
-  "trialId": "<id>",
-  "sourceRepo": "<absolute app-only repository path>",
-  "statePath": "<absolute persistent state path>",
-  "baseCommit": "<40-character commit>",
-  "prompt": "<exact shared kickoff prompt>"
-}
-```
+`worktrees --trial ID --json` creates or attaches the CLI worktrees, reserves a
+distinct valid UUID per lane, and applies the prep overlay only to B. It does
+not launch Copilot.
 
-### `attach`
+`attach` registers an external pristine app worktree at the source commit. It
+rejects the source repository, dirty/unrelated trees, wrong commits,
+duplicate/symlinked paths, and reused session IDs. B's overlay is applied and
+timed during attachment.
 
-Registers an externally created, pristine Git worktree of that exact source
-repository and commit. It rejects the source repository itself, dirty trees,
-wrong commits, unrelated repositories, duplicate lane paths, and symlinked
-paths. The same child session ID cannot be attached to both lanes. B's
-documented workflow and fixture support are overlaid only now, and its setup
-time is recorded separately.
+The source has no presentation-repository history, but host-injected
+instructions and tools can still affect both lanes; A is not "instruction-free."
 
-Worktrees isolate checked-out changes; they are not security sandboxes. They
-share Git object/history storage and do not prevent tools from reading other
-filesystem paths. The app-only source repository has no parent presentation
-repository in its commit history, and the identical kickoff prompt explicitly
-restricts each child to its own repository. Host-injected user instructions and
-available tools can still influence both lanes, so do not describe A as having
-“zero instructions.”
+### Running and checking
 
-For a CLI-only rehearsal, `worktrees` creates any missing A/B worktrees from the
-same commit. It never duplicates an attached lane.
+Without `--copilot`, `start` starts the timer and prints the prompt; it does not
+message or create an app session. Other raw commands likewise print their next prompt.
 
-### `start`, `check`, and `feedback`
+With `--copilot`, those commands invoke the real CLI with the fixed settings,
+reserved lane UUID, and unique usage path. Follow-ups stay in the same session.
+`resume` preserves the running lane's timer.
 
-`start` records wall-clock time immediately before the presenter sends the
-returned short prompt. A and B must run sequentially.
+`twtty B` requires a real failed check. It reports the measured slowest command
+and missing checks, asks for the smallest safe change, and opens an intervention
+window closed by the next check. It is optional and never replaces final checks.
 
-`check` always runs:
+Every `check` runs protected `npm test` with 400,000 generated invoices and the
+independent suite through an ephemeral HTTP server. It verifies scripts, hooks,
+original regression hashes, generator/store hashes, environment controls, and
+row count. Adding tests is allowed; weakening the original path blocks the check.
 
-1. the repository's full `npm test`; and
-2. the external acceptance suite through a real ephemeral HTTP server.
+The external suite uses an in-memory fixture and does not copy gate source or
+rewrite app data. TAP logs, timings, hashes, and attempts persist under the
+trial. A lane's timer stops only after both checks pass; `mark-incomplete`
+records no pass time.
 
-Before `npm test`, the runner verifies the prepared full-test and seed scripts,
-their lifecycle hooks, every original regression-test hash, the generator hash,
-and the lane-specific store hash. Added tests and extra fast commands are
-allowed; deleting or weakening the original full path blocks the command. The
-full environment removes inherited `INVOICE_*` controls, then sets
-`INVOICE_COUNT=400000`, clears the fixture override, and verifies that the
-generated file actually contains 400,000 rows.
+### Metrics
 
-The external suite uses `buildApp` with an in-memory fixture and never copies
-test code or rewrites data inside the app. Full TAP logs, elapsed time per
-command, data hashes, and every attempt persist under the trial. The clock stops
-only when both checks pass. `feedback` prints only failures actually observed.
-Use `mark-incomplete` after a bounded stagnation policy so the next lane can
-start; an incomplete lane has no pass time.
+For app runs, use the correct new child's Insights. For CLI runs, use that
+lane's final output and unique usage JSON. Never mix app and CLI metrics or add
+cumulative snapshots from one resumed session.
 
-### Conditional TWTTY
-
-`twtty B` is rejected until B has an actual failed check. It names the measured
-slowest command, includes observed missing checks, requests the smallest safe
-change, and opens a timed intervention window closed by the next `check`. Do not
-describe a historical run as TWTTY-optimized unless this intervention actually
-occurred in that run. TWTTY may optimize the inner loop, but B must still pass
-the unchanged full `npm test` and independent acceptance gate.
-
-### Insights and comparison
-
-Copy values manually from each real child session's Insights panel. Missing
-values remain `null`, never zero. Currency cost, AI credits, tokens, API calls,
-model runtime, and wall time remain separate fields with provenance. `compare`
-shows completion, time to actual pass, iterations, active command time, B
-workspace-overlay time, measured workspace-preparation totals, interventions,
-and Insights. It never declares a winner and never compares different units.
-
-`sourcePreparationMs` measures source materialization and the initial Git commit.
-Lane `setupMs` measures worktree registration and, for B, overlay copying. These
-do **not** measure authoring the reusable B preparation or provisioning the host
-project and child sessions. Accordingly:
-
-- `preparationTimingScope` is
-  `workspace materialization/overlay only; authoring and host-session provisioning not measured`;
-- unmeasured authoring and provisioning fields remain `null`;
-- `totalIncludingWorkspacePreparationMs` includes only measured
-  materialization/overlay plus run wall time; and
-- `endToEndTotalMs` remains `null`.
-
-Do not present the measured workspace sum as an all-in total or infer end-to-end
-savings while authoring and provisioning remain unknown.
-
-Wall time includes model work, commands, feedback round trips, and presenter or
-user pauses between `start` and a passing `check`.
-
-Exact optional Insights flags:
+`--provenance` and `--reference` are required. Optional flags are:
 
 ```text
 --model
@@ -160,52 +288,43 @@ Exact optional Insights flags:
 --model-runtime-seconds
 ```
 
-`--provenance` and `--reference` are required.
+Use cost fields only for currency and credit fields only for credits. Missing
+values stay `null`. Keep currency, credits, tokens, calls, model runtime, wall
+time, and their units distinct.
 
-## Presenter flow
+`compare` reports completion, verified-pass time, iterations, active command
+time, interventions, B overlay time, workspace preparation, and Insights. It
+does not declare a winner.
 
-1. Run `prepare --json`.
-2. Use the app's `create_project` API on `sourceRepo`.
-3. Create two idle worktree child sessions from that project with identical
-   settings. Because `create_session` cannot select a model without a kickoff,
-   explicitly select and verify the same model in both fresh idle sessions
-   before either `start`.
-4. Attach their absolute workspace paths and session IDs.
-5. Start and finish A, then start and finish B.
-6. After each failed check, send exactly the generated `feedback`.
-7. Use a bounded retry/stagnation rule; mark a lane incomplete honestly.
-8. If B genuinely struggles, optionally run `twtty B` and send its prompt.
-9. Copy each child session's Insights into `insights`.
-10. Run `compare`.
+`sourcePreparationMs` covers source materialization and the initial commit.
+Lane `setupMs` covers worktree registration and B's overlay. Neither includes
+prep authoring or host provisioning, and readiness usage may appear in
+session-wide Insights. Report these separately, leave unmeasured values and
+`endToEndTotalMs` null, and do not present
+`totalIncludingWorkspacePreparationMs` as an all-in total.
 
-The copyable main-session orchestration prompt is
-[`prompts/main-session-orchestration.md`](prompts/main-session-orchestration.md).
+Wall time includes model work, commands, feedback round trips, and presenter or
+user pauses between `start` and a passing `check`.
 
-## What acceptance covers
+## Acceptance scope
 
-- the conventional business rule: only `SENT` and strictly before as-of
-- valid leap-day and date boundaries
-- composition with `q`, `status`, and `customer`
-- 25-row pagination and query preservation
-- checkbox rendering and checked state
-- filtered count and all-page outstanding total
-- amount formatting and HTML escaping regressions
-- a real built-in Node HTTP smoke request
+The gate covers the conventional overdue rule (`SENT` and strictly before
+as-of), leap-day and date boundaries, composition with search/status/customer
+filters, 25-row pagination, query preservation, checkbox state, filtered count,
+all-page totals, formatting/escaping regressions, and a real built-in Node HTTP
+smoke request.
 
-It does **not** claim browser automation, authentication, accessibility, visual
-layout quality, production scale performance, or real customer data.
+It does not claim browser automation, authentication, accessibility, visual
+quality, production-scale performance, or real customer data.
 
 ## Files
 
 | Path | Purpose |
 | --- | --- |
 | `baseline/` | Unimplemented starting application |
-| `FEATURE-REQUEST.md` | Complete byte-identical feature specification |
-| `prep/` | B-only workflow and fixture support; no completed feature |
-| `gate/acceptance.test.js` | External, non-mutating final acceptance |
-| `run.js` | Persistent zero-dependency experiment runner |
-| `test/run.test.js` | Runner and red/green acceptance tests |
+| `FEATURE-REQUEST.md` | Shared feature specification |
+| `prep/` | B-only workflow and fixture; no completed feature |
+| `gate/acceptance.test.js` | External, non-mutating acceptance |
+| `run.js` | Persistent zero-dependency runner |
+| `test/run.test.js` | Runner and acceptance regression tests |
 | `results/` | Historical, explicitly non-comparable records |
-
-`scripts/setup-runs.sh` and `scripts/run-gate.sh` are compatibility entry points
-for the runner; neither performs destructive directory copying.

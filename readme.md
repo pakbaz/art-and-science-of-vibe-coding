@@ -1,7 +1,7 @@
 # The Art and Science of Vibe Coding
 
-A presentation and hands-on demo about getting reliable results from coding
-agents.
+A presentation and hands-on demonstration of getting reliable results from
+coding agents.
 
 The central idea: **the model is the brain, the harness is the body, and your
 setup gives them the context, tools, and feedback needed to do useful work.**
@@ -12,37 +12,49 @@ setup gives them the context, tools, and feedback needed to do useful work.**
 
 The deck covers model and harness selection, focused context, durable session
 state, permissions, test feedback loops, TWTTY ("Tell me What To Tell You"),
-regression tests, repository instructions, and delegation.
+regression tests, repository instructions, and delegation. Speaker notes
+contain the talk track and live-demo cues.
 
-Speaker notes include the talk track, source references, animation cues, and
-the live demo runbook. Use slideshow mode for the animated reveals.
+## Live A/B demo
 
-## The demo
+Two new coding-agent sessions implement the same overdue-invoices feature from
+the same app-only commit in separate Git worktrees.
 
-Two coding-agent sessions implement the same overdue-invoices feature in a
-small, server-rendered Node.js application.
-
-| | Run A: vibe coding | Run B: prepared setup |
+| | A: baseline | B: prepared |
 | --- | --- | --- |
-| Starting point | Baseline application | Same application commit |
-| Request | Short prompt and complete feature specification | Same prompt and specification |
-| Repository setup | Baseline instructions and full tests | Added `AGENTS.md`, a 100-row fixture, and fast tests |
-| Feedback | Actual failures followed by correction prompts | Fast feedback, with TWTTY if the loop genuinely stalls |
-| Finish line | Full tests and independent feature/HTTP checks | The same checks |
+| Request | Shared short prompt and full feature specification | Exactly the same |
+| Added setup | None beyond the baseline | `AGENTS.md`, curated fixture, fast-test command |
+| Finish line | Protected full tests plus independent feature/HTTP gate | Exactly the same |
 
-Use the same model, reasoning settings, harness, and tool grants. Each session
-works in a separate Git worktree. Run A first, then B.
+Run the lanes sequentially for a cleaner time comparison or explicitly choose
+parallel mode for a live side-by-side demonstration. Parallel runs share CPU,
+disk, and network and are not controlled latency benchmarks. Preparation is a
+hypothesis, not a guarantee that B wins.
 
-Compare time to a verified pass, correction rounds, and observed session
-Insights metrics. Report preparation separately. **Better preparation is the
-hypothesis, not a guaranteed win for B.**
+The primary guide contains the copyable **natural-language MAIN-chat prompt
+series first**, followed by the portable two-terminal CLI workflow and complete
+runner contract:
 
-### Try the baseline application
+**[Open the live demo guide](demo/README.md).**
 
-You need Node.js and npm. The application uses built-in Node.js modules and
-requires no dependency installation.
+Quickstart:
 
-From the repository root:
+1. App workflow: paste the setup, start-A, start-B, check-both, and final-report
+   prompts from [the recommended workflow](demo/README.md#recommended-workflow-prompts-for-the-main-chat)
+   into the MAIN session.
+2. CLI workflow: run `node demo/run.js prepare --parallel --json`, copy its new
+   `trialId`, run `worktrees`, then use that same ID in two terminals as shown
+   in [the terminal guide](demo/README.md#portable-terminal-workflow).
+3. Treat only `check_passed=true` as a pass. Report incomplete lanes and unknown
+   metrics honestly.
+
+The single-document
+[coordinator contract](demo/prompts/main-session-orchestration.md) is available
+when a presenter prefers one comprehensive MAIN-chat instruction.
+
+## Try the baseline application
+
+The app uses built-in Node.js modules and requires no dependency installation.
 
 ```bash
 cd demo/baseline
@@ -54,56 +66,30 @@ npm start
 Open <http://localhost:3000/invoices> after starting the server. The baseline
 deliberately does not implement the requested overdue feature.
 
-### Run the A/B experiment
+## Reading results safely
 
-You also need Git and a coding-agent host that can create two independent
-worktree sessions.
-
-From the repository root:
-
-```bash
-node demo/run.js help
-node demo/run.js prepare --id rehearsal-01 --json
-```
-
-Choose a fresh trial ID for each experiment. `prepare` creates an app-only
-source repository; it does not create or start agent sessions.
-
-Follow the [presenter guide](demo/README.md#presenter-flow) to create and attach
-the sessions, run each lane, record real failures, and enter Insights values.
-The [copyable orchestration prompt](demo/prompts/main-session-orchestration.md)
-provides the same workflow for a coordinating agent.
-
-The runner prints prompts for you to send to the child sessions. It records
-completion only after the shared checks pass, not when an agent says "done."
-
-## Reading the results
-
-- Missing metrics are unknown, not zero. Keep currency, credits, tokens, and
-  model runtime in their own units.
-- Wall time includes agent work, commands, corrections, and presenter pauses.
-- Workspace preparation timing does not include authoring the setup or
-  provisioning the host sessions. It is not an all-in cost.
-- Git worktrees isolate edits, not filesystem access. Both sessions may still
-  receive global host instructions.
-- The HTTP check is not a browser, authentication, accessibility, or load test.
-- The [archived results](demo/results/README.md) belong to an earlier experiment
-  and are not comparable to this demo.
+- `--allow-all` permits Copilot CLI tool, path, and URL access; use it only in a
+  trusted environment. It does not bypass authentication, organization or
+  service policy, or sandbox boundaries.
+- A chat prompt cannot grant app permissions. Use the same actual host grants
+  for both app sessions and surface required user action.
+- Worktrees isolate edits, not filesystem access or machine resources.
+- Missing metrics are unknown, not zero. Keep currency, credits, tokens, model
+  runtime, wall time, and setup in their own units and scopes.
+- Readiness turns may appear in session-wide Insights. Workspace preparation is
+  not an end-to-end cost.
+- The HTTP gate is not a browser, authentication, accessibility, or load test.
+- [Archived results](demo/results/README.md) are from an earlier experiment and
+  are not comparable to a new run.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| [`deck/`](deck/) | PowerPoint presentation with speaker notes |
-| [`demo/README.md`](demo/README.md) | Runner commands and presenter workflow |
-| [`demo/FEATURE-REQUEST.md`](demo/FEATURE-REQUEST.md) | Shared feature requirements |
+| [`deck/`](deck/) | Presentation with speaker notes |
+| [`demo/README.md`](demo/README.md) | Primary prompt-first demo guide and runner reference |
+| [`demo/prompts/`](demo/prompts/) | Shared feature prompt and coordinator contract |
 | [`demo/baseline/`](demo/baseline/) | Starting invoice application |
-| [`demo/prep/`](demo/prep/) | Run B instructions and fast-test setup |
+| [`demo/prep/`](demo/prep/) | B-only instructions and fast-test setup |
 | [`demo/gate/`](demo/gate/) | Independent acceptance checks |
 | [`demo/test/`](demo/test/) | Runner and acceptance regression tests |
-
-Run the demo runner's regression tests from the repository root:
-
-```bash
-node --test demo/test/run.test.js
-```
