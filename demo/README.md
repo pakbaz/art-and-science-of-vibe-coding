@@ -36,13 +36,33 @@ Paste these prompts into **MAIN**, not A or B. MAIN coordinates but never
 implements. The detailed rules and app API specifics live in
 [`prompts/main-session-orchestration.md`](prompts/main-session-orchestration.md).
 
+### One prompt: run through a new orchestrator
+
+```text
+Create a new orchestrator worktree session in this EXISTING project, then have
+it run the invoice A/B demo under demo/prompts/main-session-orchestration.md.
+Use prepare --existing-project --parallel --json. The orchestrator must create
+two nested worktree sessions, A and B, in this same project, each using the
+returned baseBranch. Do not create or register any new projects.
+Use GPT-5.6 Sol, high reasoning, long_context for both lanes and the contract's
+identical readiness kickoff and exact feature prompt. Run A and B in parallel,
+check each only when idle, send only exact failure feedback, and report the
+verified results with unknown metrics left null. Leave existing runs alone.
+```
+
+The hierarchy is MAIN -> orchestrator -> A/B, all in the existing project.
+Each session has its own worktree. For manual control over each phase, use the
+following prompts instead, directly in MAIN or in a new orchestrator.
+
 ### 1. Prepare two fresh sessions
 
 ```text
 Prepare a completely new parallel invoice A/B trial. First read
 demo/prompts/main-session-orchestration.md and follow its setup contract exactly.
 Coordinate only in MAIN; do not implement the feature or start either timer.
-Create the app-only project and two NEW NESTED worktree sessions from one commit.
+Run prepare --existing-project --parallel --json. Create two NEW NESTED
+worktree sessions in this EXISTING project, each from the returned baseBranch.
+Do not create a project or register a source directory as one.
 Give both GPT-5.6 Sol, high reasoning, long_context, and equal real host grants.
 Use the contract's identical readiness kickoff; wait idle and verify pristine.
 Attach their actual IDs and paths, applying the preparation only to B.
@@ -105,6 +125,24 @@ unlike values, and do not imply B must win. If Insights is inaccessible, ask me
 for the real displayed values.
 ```
 
+### 6. Clean up this run
+
+Paste this in MAIN after the demo:
+
+```text
+Clean up trial <TRIAL_ID> and its orchestrator/A/B sessions for the next demo.
+Confirm these exact sessions are finished. Preserve their final changes on
+trial-specific local archive branches, and save a Git bundle, state, logs,
+comparison, and a manifest outside every worktree that will be removed.
+Verify the bundle contains the baseline and both final lane commits before
+archiving A and B, then the orchestrator. Never merge demo app-only branches
+into main or push them. Remove only this trial's now-unused baseline/run
+branches and worktrees after preservation is verified. Retain the archive
+branches, bundle, and results. Leave MAIN, other runs, prewarm worktrees,
+unrelated changes, and existing projects untouched. Report what was preserved
+and removed; do not start the next run.
+```
+
 ## Portable terminal workflow
 
 This path runs real Copilot CLI sessions; it does not create nested app
@@ -116,7 +154,7 @@ distinct session UUIDs. The actual sessions begin at `start --copilot`.
 From the repository root:
 
 ```bash
-node demo/run.js prepare --parallel --json
+node demo/run.js prepare --existing-project --parallel --json
 node demo/run.js worktrees --trial PASTE_NEW_TRIAL_ID --json
 ```
 
@@ -207,7 +245,7 @@ their values remain `null`.
 
 ```text
 node demo/run.js help
-node demo/run.js prepare [--id ID] [--parallel] [--json]
+node demo/run.js prepare [--id ID] [--existing-project] [--parallel] [--json]
 node demo/run.js worktrees --trial ID --json
 node demo/run.js attach A|B WORKTREE --session SESSION_ID --trial ID
 node demo/run.js start A|B --trial ID [--copilot]
@@ -225,26 +263,41 @@ node demo/run.js compare --trial ID
 
 ### Setup and isolation
 
-`prepare` creates a unique ignored `demo/.runs/<id>` directory and app-only Git
-repository containing the baseline, README, and feature request—not the gate,
-prep, results, deck, or opposite lane. Existing trials are never overwritten.
+`prepare --existing-project` creates a unique ignored `demo/.runs/<id>`
+directory and a local `demo-baseline/<id>` branch in the existing repository.
+The parentless commit contains only the baseline app, README, and feature
+request, not the gate, prep, results, deck, or opposite lane. The current branch,
+checkout, and index are unchanged, including staged and unstaged edits. Existing
+trials and baseline branches are never overwritten. Do not push or merge these
+app-only branches into main.
+
+For compatibility, omitting `--existing-project` creates the original standalone
+source Git repository under the trial directory. It does not register an app
+project. Use `--existing-project` for all new nested-session demos.
 
 Default mode enforces A then B. `--parallel` allows either to start first and
 both to remain active; shared-state and per-lane locks protect concurrent state.
 
-`prepare --json` reports the trial ID, source and state paths, base commit, and
-shared prompt. It creates no project, child session, worktree, or agent.
+`prepare --json` reports the trial ID, source mode, source and state paths, base
+commit, baseline branch (`null` in standalone mode), and shared prompt. It
+creates no project, child session, worktree, or agent. For app sessions, keep the
+current project and pass `baseBranch` as each child's `base_branch`.
 
 `worktrees --trial ID --json` creates or attaches the CLI worktrees, reserves a
 distinct valid UUID per lane, and applies the prep overlay only to B. It does
 not launch Copilot.
 
-`attach` registers an external pristine app worktree at the source commit. It
-rejects the source repository, dirty/unrelated trees, wrong commits,
+`attach` registers an external pristine app worktree at the baseline commit. It
+accepts worktrees sharing the coordinator's Git directory, including when the
+coordinator is itself a worktree. It rejects the source/coordinator checkout,
+dirty/unrelated trees, wrong commits,
 duplicate/symlinked paths, and reused session IDs. B's overlay is applied and
 timed during attachment.
 
-The source has no presentation-repository history, but host-injected
+The app-only baseline has no parent history, but same-project worktrees share
+the repository's Git objects and refs. Other branches and worktrees remain
+accessible; this is not a security boundary. Do not inspect those refs or
+worktrees during the demo or expose the gate to either lane. Host-injected
 instructions and tools can still affect both lanes; A is not "instruction-free."
 
 ### Running and checking

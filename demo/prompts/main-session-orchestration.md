@@ -12,12 +12,24 @@ sessions; use the host's real project/session tools for app sessions.
 
 SETUP
 
-1. Run `node demo/run.js prepare --parallel --json` with a new trial ID. Use the
-returned app-only `sourceRepo` to create the source project.
+1. Stay in the existing presentation project. Run
+`node demo/run.js prepare --existing-project --parallel --json` with a new trial
+ID. This creates a fresh app-only baseline branch in this same repository,
+without switching or changing the coordinator's checkout. Record `baseBranch`
+and `baseCommit`. Never call `create_project` or register a timestamped source
+directory as another project. `sourceRepo` is the coordinator's existing
+checkout, not a new project.
 
 2. Create two NEW NESTED worktree sessions, clearly named A and B, from the same
-source commit. Both must use GPT-5.6 Sol, high reasoning, `long_context`,
-interactive mode, and the same actual host tool grants.
+baseline commit. Use `create_session` with `workspace_type: "worktree"` and
+`base_branch` set to the exact returned `baseBranch` for EACH child. Omit
+`project_id` to inherit the coordinator's project, or explicitly use that same
+project ID. Never use a source-directory project ID. If MAIN delegated this
+contract to an orchestrator, that orchestrator creates both children so the
+hierarchy is MAIN -> orchestrator -> A/B, all within one project.
+
+Both must use GPT-5.6 Sol, high reasoning, `long_context`, interactive mode,
+and the same actual host tool grants.
 
 `create_session` can set a model only inside a kickoff. Therefore use this
 identical short read-only readiness kickoff for both:
@@ -41,10 +53,11 @@ and verify the same model manually before attachment. A prompt cannot grant
 app permissions or bypass auth, organization/service policy, or sandbox
 boundaries; use equal real host grants and surface required user action.
 
-After setup, return the actual clickable links, session IDs, absolute worktree
-paths, trial ID, common commit, pristine-before-attach result, and B-only
-overlay result. Readiness turns are setup overhead. Do not claim session-wide
-Insights excludes them unless the host provides that split.
+After setup, verify both children belong to the coordinator's existing project.
+Return the actual clickable links, session IDs, absolute worktree paths, trial
+ID, project ID, baseline branch, common commit, pristine-before-attach result,
+and B-only overlay result. Readiness turns are setup overhead. Do not claim
+session-wide Insights excludes them unless the host provides that split.
 
 START CONTRACT
 
@@ -100,8 +113,11 @@ guarantee, imply, or manufacture a B win.
 
 Parallel lanes share CPU, disk, and network; describe them as a side-by-side
 demonstration, not a controlled latency benchmark. Worktrees isolate changes,
-not filesystem visibility. Both lanes may receive global host instructions, so
-do not describe A as instruction-free.
+not filesystem visibility or Git objects/refs. Each lane checks out only the
+app and feature request from a parentless baseline commit, but other repository
+refs remain accessible. Do not inspect other refs or worktrees, or claim the
+gate is inaccessible. Both lanes may receive global host instructions, so do
+not describe A as instruction-free.
 ```
 
 After setup completes, the presenter's ordinary follow-up turns are:

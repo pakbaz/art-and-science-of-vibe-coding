@@ -46,7 +46,7 @@ function parseArgs(argv) {
       continue;
     }
     const key = value.slice(2);
-    if (["json", "parallel", "copilot"].includes(key)) {
+    if (["json", "parallel", "copilot", "existing-project"].includes(key)) {
       flags[key] = true;
       continue;
     }
@@ -221,7 +221,7 @@ function run(command, args, options = {}) {
 }
 
 function git(cwd, args, options = {}) {
-  const result = run("git", ["--no-pager", ...args], { cwd });
+  const result = run("git", ["--no-pager", ...args], { cwd, env: options.env });
   if (result.status !== 0 && !options.allowFailure) {
     throw new CliError(
       `git ${args.join(" ")} failed in ${cwd}\n${result.stdout}${result.stderr}`.trim(),
@@ -294,6 +294,48 @@ function trustedBaseline(sourceRepo) {
   };
 }
 
+function createProjectBaseline(trialRoot, trialId) {
+  const sourceRepo = gitTop(DEMO_ROOT);
+  const commonGitDir = gitCommon(sourceRepo);
+  const baseBranch = `demo-baseline/${trialId}`;
+  const ref = `refs/heads/${baseBranch}`;
+  git(sourceRepo, ["check-ref-format", ref]);
+  const existing = git(sourceRepo, ["show-ref", "--verify", "--quiet", ref], { allowFailure: true });
+  if (existing.status === 0) throw new CliError(`baseline branch already exists: ${baseBranch}`);
+  if (existing.status !== 1) {
+    throw new CliError(`cannot check baseline branch: ${existing.stderr || existing.error}`, 1);
+  }
+
+  const baseline = path.join(trialRoot, "baseline");
+  copyBaseline(baseline);
+  const index = path.join(trialRoot, "baseline.index");
+  const env = {
+    ...process.env,
+    GIT_DIR: commonGitDir,
+    GIT_WORK_TREE: baseline,
+    GIT_INDEX_FILE: index,
+    GIT_AUTHOR_NAME: "Demo Runner",
+    GIT_AUTHOR_EMAIL: "demo-runner@invalid.local",
+    GIT_COMMITTER_NAME: "Demo Runner",
+    GIT_COMMITTER_EMAIL: "demo-runner@invalid.local",
+  };
+  let baseCommit;
+  try {
+    git(baseline, ["-c", "core.splitIndex=false", "read-tree", "--empty"], { env });
+    git(baseline, ["-c", "core.splitIndex=false", "add", "--all", "--", "."], { env });
+    const tree = git(baseline, ["write-tree"], { env }).stdout.trim();
+    baseCommit = git(baseline, [
+      "commit-tree", tree,
+      "-m", "Initial invoice admin baseline",
+      "-m", "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+    ], { env }).stdout.trim();
+    git(baseline, ["update-ref", ref, baseCommit, "0".repeat(baseCommit.length)], { env });
+  } finally {
+    if (fs.existsSync(index)) fs.unlinkSync(index);
+  }
+  return { sourceRepo, baseBranch, baseCommit, baseline };
+}
+
 function prepare(flags) {
   const trialId = safeTrialId(flags.id);
   const trialRoot = path.join(RUNS_ROOT, trialId);
@@ -304,22 +346,29 @@ function prepare(flags) {
   fs.mkdirSync(trialRoot);
 
   const started = process.hrtime.bigint();
-  const sourceRepo = path.join(trialRoot, "source");
-  fs.mkdirSync(sourceRepo, { recursive: true });
-  copyBaseline(sourceRepo);
-  git(sourceRepo, ["init", "--quiet"]);
-  git(sourceRepo, ["config", "user.name", "Demo Runner"]);
-  git(sourceRepo, ["config", "user.email", "demo-runner@invalid.local"]);
-  git(sourceRepo, ["add", "."]);
-  git(sourceRepo, [
-    "commit",
-    "--quiet",
-    "-m",
-    "Initial invoice admin baseline",
-    "-m",
-    "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
-  ]);
-  const baseCommit = git(sourceRepo, ["rev-parse", "HEAD"]).stdout.trim();
+  let sourceRepo, baseCommit, baseline;
+  let baseBranch = null;
+  if (flags["existing-project"]) {
+    ({ sourceRepo, baseBranch, baseCommit, baseline } = createProjectBaseline(trialRoot, trialId));
+  } else {
+    sourceRepo = path.join(trialRoot, "source");
+    fs.mkdirSync(sourceRepo, { recursive: true });
+    copyBaseline(sourceRepo);
+    git(sourceRepo, ["init", "--quiet"]);
+    git(sourceRepo, ["config", "user.name", "Demo Runner"]);
+    git(sourceRepo, ["config", "user.email", "demo-runner@invalid.local"]);
+    git(sourceRepo, ["add", "."]);
+    git(sourceRepo, [
+      "commit",
+      "--quiet",
+      "-m",
+      "Initial invoice admin baseline",
+      "-m",
+      "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+    ]);
+    baseCommit = git(sourceRepo, ["rev-parse", "HEAD"]).stdout.trim();
+    baseline = sourceRepo;
+  }
 
   const statePath = path.join(trialRoot, "state.json");
   const state = {
@@ -330,8 +379,10 @@ function prepare(flags) {
     statePath,
     trialRoot,
     sourceRepo,
+    sourceMode: flags["existing-project"] ? "existing-project" : "standalone",
+    baseBranch,
     baseCommit,
-    trusted: trustedBaseline(sourceRepo),
+    trusted: trustedBaseline(baseline),
     prompt: FEATURE_PROMPT,
     asOf: AS_OF,
     preparation: {
@@ -352,8 +403,10 @@ function prepare(flags) {
   return {
     trialId,
     executionMode: state.executionMode,
+    sourceMode: state.sourceMode,
     sourceRepo,
     statePath,
+    baseBranch,
     baseCommit,
     prompt: FEATURE_PROMPT,
   };
@@ -399,7 +452,7 @@ function validateWorkspace(state, candidate) {
   const sourceRepo = fs.realpathSync(state.sourceRepo);
   if (workspace === sourceRepo) throw new CliError("the source repository cannot be attached as a lane");
   if (gitTop(workspace) !== workspace) throw new CliError("workspace must be the root of a git worktree");
-  if (gitCommon(workspace) !== fs.realpathSync(path.join(sourceRepo, ".git"))) {
+  if (gitCommon(workspace) !== gitCommon(sourceRepo)) {
     throw new CliError("workspace is not a worktree of this trial's source repository");
   }
   const head = git(workspace, ["rev-parse", "HEAD"]).stdout.trim();
@@ -993,7 +1046,7 @@ function help() {
   return `Honest invoice A/B demo runner
 
 Usage:
-  node demo/run.js prepare [--id ID] [--parallel] [--json]
+  node demo/run.js prepare [--id ID] [--existing-project] [--parallel] [--json]
   node demo/run.js worktrees --trial ID [--json]
   node demo/run.js attach A|B WORKSPACE --session ID --trial ID [--json]
   node demo/run.js start A|B --trial ID [--copilot | --json]
@@ -1083,7 +1136,7 @@ function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === "prepare") {
-    assertAllowedFlags(flags, ["id", "json", "parallel"]);
+    assertAllowedFlags(flags, ["id", "json", "parallel", "existing-project"]);
     if (positionals.length !== 1) throw new CliError("prepare takes no positional arguments");
     output(prepare(flags), flags.json);
     return;

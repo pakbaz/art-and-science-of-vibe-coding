@@ -204,6 +204,131 @@ test("help is short and invalid commands fail clearly", () => {
   assert.match(invalid.stderr, /state file not found/);
 });
 
+test("existing-project preparation keeps nested lane worktrees in the same repository", () => {
+  const project = path.join(sandbox, "existing-project");
+  const coordinator = path.join(sandbox, "coordinator");
+  const git = (cwd, args) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    return result.stdout.trim();
+  };
+  fs.mkdirSync(path.join(project, "demo"), { recursive: true });
+  for (const entry of ["run.js", "baseline", "prep", "gate", "FEATURE-REQUEST.md"]) {
+    fs.cpSync(path.join(DEMO_ROOT, entry), path.join(project, "demo", entry), {
+      recursive: true,
+      filter: (source) => path.basename(source) !== "invoices.json",
+    });
+  }
+  fs.writeFileSync(path.join(project, "presentation.txt"), "Keep this presentation.\n");
+  git(project, ["init", "--quiet"]);
+  git(project, ["config", "user.name", "Demo Test"]);
+  git(project, ["config", "user.email", "demo-test@invalid.local"]);
+  git(project, ["add", "."]);
+  git(project, [
+    "commit", "--quiet", "-m", "Fixture project",
+    "-m", "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+  ]);
+  const originalHead = git(project, ["rev-parse", "HEAD"]);
+  git(project, ["worktree", "add", "--quiet", "--detach", coordinator, originalHead]);
+  fs.writeFileSync(path.join(coordinator, "presentation.txt"), "Staged presenter edits.\n");
+  git(coordinator, ["add", "presentation.txt"]);
+  fs.appendFileSync(path.join(coordinator, "presentation.txt"), "Unstaged presenter edits.\n");
+  fs.writeFileSync(path.join(coordinator, "untracked.txt"), "Keep this untracked file.\n");
+  const originalStatus = git(coordinator, ["status", "--porcelain"]);
+  const originalIndex = fs.readFileSync(path.resolve(
+    coordinator, git(coordinator, ["rev-parse", "--git-path", "index"]),
+  ));
+  const originalProjectIndex = fs.readFileSync(path.join(project, ".git", "index"));
+  const originalContent = fs.readFileSync(path.join(coordinator, "presentation.txt"));
+  const invoke = (args, allowFailure = false, checkout = coordinator) => {
+    const env = { ...process.env, DEMO_RUNS_ROOT: path.join(sandbox, "existing-trials") };
+    delete env.NODE_TEST_CONTEXT;
+    const result = spawnSync(process.execPath, [path.join(checkout, "demo", "run.js"), ...args], {
+      cwd: checkout, env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    });
+    if (!allowFailure) assert.equal(result.status, 0, result.stderr);
+    return result;
+  };
+  const info = JSON.parse(invoke([
+    "prepare", "--existing-project", "--parallel", "--id", "nested", "--json",
+  ]).stdout);
+  assert.equal(info.sourceMode, "existing-project");
+  assert.equal(info.sourceRepo, coordinator);
+  assert.equal(info.baseBranch, "demo-baseline/nested");
+  assert.equal(git(project, ["rev-parse", info.baseBranch]), info.baseCommit);
+  assert.equal(git(project, ["rev-list", "--count", info.baseCommit]), "1");
+  assert.match(git(project, ["log", "-1", "--format=%B", info.baseCommit]), /Co-authored-by: Copilot App/);
+  const paths = git(project, ["ls-tree", "-r", "--name-only", info.baseCommit]).split("\n");
+  assert.ok(paths.includes("FEATURE-REQUEST.md") && paths.includes("src/server.js"));
+  assert.ok(!paths.some((file) => /^(demo\/|deck\/|AGENTS\.md$|presentation\.txt$)/.test(file)));
+  assert.equal(fs.existsSync(path.join(path.dirname(info.statePath), "source", ".git")), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(info.statePath), "baseline.index")), false);
+  assert.equal(git(coordinator, ["rev-parse", "HEAD"]), originalHead);
+  assert.equal(git(project, ["rev-parse", "HEAD"]), originalHead);
+  assert.deepEqual(fs.readFileSync(path.resolve(
+    coordinator, git(coordinator, ["rev-parse", "--git-path", "index"]),
+  )), originalIndex);
+  assert.deepEqual(fs.readFileSync(path.join(coordinator, "presentation.txt")), originalContent);
+  assert.equal(git(coordinator, ["status", "--porcelain"]), originalStatus);
+  const duplicate = invoke(["prepare", "--existing-project", "--id", "nested"], true);
+  assert.notEqual(duplicate.status, 0);
+  assert.equal(git(project, ["rev-parse", info.baseBranch]), info.baseCommit);
+  git(project, ["branch", "demo-baseline/collision", originalHead]);
+  const collision = invoke(["prepare", "--existing-project", "--id", "collision"], true);
+  assert.notEqual(collision.status, 0);
+  assert.match(collision.stderr, /baseline branch already exists/);
+  assert.equal(git(project, ["rev-parse", "demo-baseline/collision"]), originalHead);
+
+  const wrong = path.join(sandbox, "wrong-project-base");
+  git(project, ["worktree", "add", "--quiet", "--detach", wrong, originalHead]);
+  const rejected = invoke(["attach", "A", wrong, "--session", "wrong", "--trial", info.trialId], true);
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /does not match trial base/);
+  const laneA = path.join(sandbox, "nested-A");
+  const laneB = path.join(sandbox, "nested-B");
+  for (const [lane, workspace] of [["A", laneA], ["B", laneB]]) {
+    git(project, ["worktree", "add", "--quiet", "-b", `run-${lane}`, workspace, info.baseBranch]);
+    invoke(["attach", lane, workspace, "--session", `nested-${lane}`, "--trial", info.trialId]);
+  }
+  const attached = readState(info.statePath);
+  for (const lane of ["A", "B"]) {
+    assert.equal(attached.lanes[lane].baseProof.commonGitDir, path.join(project, ".git"));
+    assert.equal(attached.lanes[lane].baseProof.head, info.baseCommit);
+  }
+  assert.equal(fs.existsSync(path.join(laneA, "AGENTS.md")), false);
+  assert.equal(fs.existsSync(path.join(laneB, "AGENTS.md")), true);
+  for (const lane of ["B", "A"]) invoke(["start", lane, "--trial", info.trialId]);
+  for (const [lane, workspace] of [["A", laneA], ["B", laneB]]) {
+    const red = JSON.parse(invoke(["check", lane, "--trial", info.trialId, "--json"], true).stdout);
+    assert.equal(red.attempt.full.exitCode, 0);
+    assert.equal(red.attempt.fullDatasetCount, 400000);
+    assert.equal(red.attempt.acceptance.exitCode, 1);
+    writeReferenceImplementation(workspace);
+    const green = JSON.parse(invoke(["check", lane, "--trial", info.trialId, "--json"]).stdout);
+    assert.equal(green.attempt.passed, true);
+    assert.equal(green.attempt.data.acceptancePreservedData, true);
+  }
+  const report = JSON.parse(invoke(["compare", "--trial", info.trialId, "--json"]).stdout);
+  assert.equal(report.A.status, "passed");
+  assert.equal(report.B.status, "passed");
+
+  const primaryInfo = JSON.parse(invoke([
+    "prepare", "--existing-project", "--id", "primary-cli", "--json",
+  ], false, project).stdout);
+  assert.equal(primaryInfo.sourceRepo, project);
+  assert.equal(primaryInfo.executionMode, "sequential");
+  const cliTrees = JSON.parse(invoke([
+    "worktrees", "--trial", primaryInfo.trialId, "--json",
+  ], false, project).stdout);
+  assert.equal(cliTrees.created.length, 2);
+  for (const lane of cliTrees.created) {
+    assert.equal(lane.commonGitDir, path.join(project, ".git"));
+    assert.equal(lane.baseCommit, primaryInfo.baseCommit);
+  }
+  assert.deepEqual(fs.readFileSync(path.join(project, ".git", "index")), originalProjectIndex);
+  assert.equal(git(coordinator, ["status", "--porcelain"]), originalStatus);
+});
+
 test("end-to-end runner preserves honest state, gate output, and nullable metrics", async (t) => {
   const prepared = cli(["prepare", "--id", "trial-one", "--json"]);
   const info = JSON.parse(prepared.stdout);

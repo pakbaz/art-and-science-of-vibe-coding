@@ -18,7 +18,9 @@ contain the talk track and live-demo cues.
 ## Live A/B demo
 
 Two new coding-agent sessions implement the same overdue-invoices feature from
-the same app-only commit in separate Git worktrees.
+the same app-only commit in separate Git worktrees. The orchestrator and both
+nested sessions stay in this existing project; no timestamped projects are
+created.
 
 | | A: baseline | B: prepared |
 | --- | --- | --- |
@@ -39,10 +41,9 @@ runner contract:
 
 Quickstart:
 
-1. App workflow: paste the setup, start-A, start-B, check-both, and final-report
-   prompts from [the recommended workflow](demo/README.md#recommended-workflow-prompts-for-the-main-chat)
-   into the MAIN session.
-2. CLI workflow: run `node demo/run.js prepare --parallel --json`, copy its new
+1. App workflow: paste [the one-prompt orchestrator launch](demo/README.md#one-prompt-run-through-a-new-orchestrator)
+   into MAIN, or use the guide's separate setup/start/check/report prompts.
+2. CLI workflow: run `node demo/run.js prepare --existing-project --parallel --json`, copy its new
    `trialId`, run `worktrees`, then use that same ID in two terminals as shown
    in [the terminal guide](demo/README.md#portable-terminal-workflow).
 3. Treat only `check_passed=true` as a pass. Report incomplete lanes and unknown
@@ -51,6 +52,8 @@ Quickstart:
 The single-document
 [coordinator contract](demo/prompts/main-session-orchestration.md) is available
 when a presenter prefers one comprehensive MAIN-chat instruction.
+[The cleanup prompt](demo/README.md#6-clean-up-this-run) preserves results before
+removing the completed run's sessions and worktrees.
 
 ## Try the baseline application
 
