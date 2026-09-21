@@ -8,12 +8,13 @@ setup gives them the context, tools, and feedback needed to do useful work.**
 
 ## Presentation
 
-[Open the PowerPoint presentation](deck/Art-and-Science-of-Vibe-Coding-v3.pptx).
+[Open the PowerPoint presentation](deck/Art-and-Science-of-Vibe-Coding-v4.pptx).
 
-The deck covers model and harness selection, focused context, durable session
-state, permissions, test feedback loops, TWTTY ("Tell me What To Tell You"),
-regression tests, repository instructions, and delegation. Speaker notes
-contain the talk track and live-demo cues.
+The deck introduces attention, context windows, and reasoning models before
+the agentic loop. It then covers model and harness selection, focused context,
+durable session state, permissions, test feedback loops, TWTTY ("Tell me What
+To Tell You"), regression tests, repository instructions, and delegation.
+Speaker notes contain the talk track and live-demo cues.
 
 ## Live A/B demo
 
