@@ -11,9 +11,10 @@ Use Node's built-in test runner.
 | `npm test` | Seed 400,000 synthetic invoices and run the same suite |
 | `npm start` | Serve `/invoices` on `PORT` (default 3000) |
 
-Use `npm run test:fast` for focused iteration and `npm test` before handing the
-work over. Both commands execute `test/`; the fixture only changes the input
-size and boundary-case mix.
+Use `npm run test:fast` for focused iteration and before handing the work over.
+The coordinator runs the protected full 400,000-row gate after the turn ends.
+Both commands execute `test/`; the fixture only changes the input size and
+boundary-case mix.
 
 ## Working agreements
 
@@ -22,6 +23,8 @@ size and boundary-case mix.
 - Reuse `formatAmount` and `escapeHtml`.
 - Test behavior through `buildApp` and the generated HTML.
 - Work only in this repository.
-- Do not edit `data/generate.js` or `data/fixture-100.json`.
+- Do not edit `data/generate.js`, `data/fixture-100.json`, or
+  `test/overdue.prep.test.js`.
+- Do not change documentation unless `FEATURE-REQUEST.md` requires it.
 
 There are no external services and no customer data in this repository.

@@ -5,7 +5,8 @@ same invoice application commit.
 
 - **A** gets the baseline repository and shared feature request.
 - **B** gets the same commit and request, plus `AGENTS.md`, a curated 100-row
-  fixture, and `npm run test:fast`.
+  fixture, focused red feature tests, and `npm run test:fast`. The preparation
+  is committed before timing so B starts clean.
 - Both must pass the protected full test path and the same independent
   feature/HTTP gate. An agent saying it is done is not a pass.
 
@@ -41,13 +42,15 @@ implements. The detailed rules and app API specifics live in
 ```text
 Create a new orchestrator worktree session in this EXISTING project, then have
 it run the invoice A/B demo under demo/prompts/main-session-orchestration.md.
-Use prepare --existing-project --parallel --json. The orchestrator must create
-two nested worktree sessions, A and B, in this same project, each using the
-returned baseBranch. Do not create or register any new projects.
+First run node --test --test-reporter=tap demo/test/run.test.js. Then use
+prepare --existing-project --first B --json. The orchestrator must create two
+nested worktree sessions, A and B, in this same project, each using the returned
+baseBranch. Do not create or register any new projects.
 Use GPT-5.6 Sol, high reasoning, long_context for both lanes and the contract's
-identical readiness kickoff and exact feature prompt. Run A and B in parallel,
-check each only when idle, send only exact failure feedback, and report the
-verified results with unknown metrics left null. Leave existing runs alone.
+identical readiness kickoff and exact feature prompt. Run B to a verified result
+before A, check each only when idle, send only exact failure feedback, and
+report the verified results with unknown metrics left null. Leave existing runs
+alone.
 ```
 
 The hierarchy is MAIN -> orchestrator -> A/B, all in the existing project.
@@ -57,44 +60,51 @@ following prompts instead, directly in MAIN or in a new orchestrator.
 ### 1. Prepare two fresh sessions
 
 ```text
-Prepare a completely new parallel invoice A/B trial. First read
+Prepare a completely new sequential invoice A/B trial. First read
 demo/prompts/main-session-orchestration.md and follow its setup contract exactly.
 Coordinate only in MAIN; do not implement the feature or start either timer.
-Run prepare --existing-project --parallel --json. Create two NEW NESTED
-worktree sessions in this EXISTING project, each from the returned baseBranch.
+Run the runner self-test, then prepare --existing-project --first B --json.
+Create two NEW NESTED worktree sessions in this EXISTING project, each from the returned baseBranch.
 Do not create a project or register a source directory as one.
 Give both GPT-5.6 Sol, high reasoning, long_context, and equal real host grants.
 Use the contract's identical readiness kickoff; wait idle and verify pristine.
-Attach their actual IDs and paths, applying the preparation only to B.
+Attach their actual IDs and paths, applying and committing the preparation only
+to B. Verify both measured starting states are clean.
 Never reuse deleted sessions, worktrees, IDs, or branches.
 Return the trial ID, child links, paths, verification, and any manual action.
 ```
 
-Readiness turns are setup activity and may be included in session-wide
-Insights. Do not claim otherwise unless the host exposes a separate split.
+Readiness turns are setup activity. Use the runner start/stop interval when
+querying local usage so measured Insights exclude readiness.
 
-### 2. Start A
+### 2. Start B first
 
 Replace `<TRIAL_ID>` with the new trial ID.
 
 ```text
-For trial <TRIAL_ID>, follow the contract to start A. Start its timer
-immediately before sending this exact prompt to the new A child:
+For trial <TRIAL_ID>, follow the contract to start B. Start its timer
+immediately before sending this exact prompt to the new B child:
 
-Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Add the overdue-invoices feature in FEATURE-REQUEST.md.
+Follow the repository instructions and existing tests. Use the fastest documented relevant test while iterating; the coordinator will run the protected full gate.
+Do not change documentation unless FEATURE-REQUEST.md requires it.
 Work only in this repository.
 
 Add no coaching, do not implement in MAIN or expose the gate, and return
 immediately after delivery with the child link and runner status.
 ```
 
-### 3. Start B in parallel
+Drive B to pass or mark it incomplete before continuing.
+
+### 3. Start A second
 
 ```text
-For trial <TRIAL_ID>, start B now under the contract; do not wait for A.
-Start its timer immediately before sending this exact prompt to the new B child:
+For trial <TRIAL_ID>, start A now that B has finished.
+Start its timer immediately before sending this exact prompt to the new A child:
 
-Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Add the overdue-invoices feature in FEATURE-REQUEST.md.
+Follow the repository instructions and existing tests. Use the fastest documented relevant test while iterating; the coordinator will run the protected full gate.
+Do not change documentation unless FEATURE-REQUEST.md requires it.
 Work only in this repository.
 
 Add no coaching, do not implement in MAIN or expose the gate, and return
@@ -117,12 +127,12 @@ both lanes pass or are honestly marked incomplete.
 
 ```text
 Finish trial <TRIAL_ID> under the contract using only these two new children.
-Record real Insights with exact units and provenance, then compare completion,
-corrections, wall time, active command time, and observed cost or credits.
-Keep workspace/readiness setup separate; do not call it end-to-end or claim
-session-wide Insights excludes it. Leave unknowns null, never invent or compare
-unlike values, and do not imply B must win. If Insights is inaccessible, ask me
-for the real displayed values.
+Query local assistant_usage_events by each exact child session ID and restrict
+the query to its runner startedAt/stoppedAt interval. Record real Insights with
+exact units and provenance, then compare completion, corrections, wall time,
+active command time, and observed AI units. Keep workspace/readiness setup
+separate and leave unknowns null. One trial is diagnostic; alternate --first
+on repeated trials and report the median before making a performance claim.
 ```
 
 ### 6. Clean up this run
@@ -149,30 +159,20 @@ This path runs real Copilot CLI sessions; it does not create nested app
 sessions. `worktrees` creates or attaches separate CLI worktrees and reserves
 distinct session UUIDs. The actual sessions begin at `start --copilot`.
 
-### 1. Prepare a fresh parallel trial
+### 1. Prepare a fresh sequential trial
 
 From the repository root:
 
 ```bash
-node demo/run.js prepare --existing-project --parallel --json
+node --test --test-reporter=tap demo/test/run.test.js
+node demo/run.js prepare --existing-project --first B --json
 node demo/run.js worktrees --trial PASTE_NEW_TRIAL_ID --json
 ```
 
 Copy the new `trialId` printed by `prepare` into the second command. The
 `worktrees` JSON identifies both paths and their distinct reserved UUIDs.
 
-### 2. Start both terminals
-
-Variables do not transfer between terminals. Set the **same new trial ID**
-separately in each.
-
-Terminal A:
-
-```bash
-TRIAL_ID='PASTE_THE_SAME_NEW_TRIAL_ID'
-node demo/run.js start A --trial "$TRIAL_ID" --copilot
-node demo/run.js check A --trial "$TRIAL_ID"
-```
+### 2. Start B, drive it green, then start A
 
 Terminal B:
 
@@ -182,9 +182,16 @@ node demo/run.js start B --trial "$TRIAL_ID" --copilot
 node demo/run.js check B --trial "$TRIAL_ID"
 ```
 
-Either lane may start first. Run both `start` commands at about the same time.
-Each starts its timer, launches `copilot -p` in its worktree, and returns to the
-shell when the turn ends. Both use `gpt-5.6-sol`, high reasoning,
+Continue B with exact feedback until it passes or is marked incomplete. Then:
+
+```bash
+TRIAL_ID='PASTE_THE_SAME_NEW_TRIAL_ID'
+node demo/run.js start A --trial "$TRIAL_ID" --copilot
+node demo/run.js check A --trial "$TRIAL_ID"
+```
+
+Each start launches `copilot -p` in its worktree and returns to the shell when
+the turn ends. Both use `gpt-5.6-sol`, high reasoning,
 `long_context`, `--allow-all`, `--no-ask-user`, their reserved UUID, and a
 unique usage JSON path.
 
@@ -245,7 +252,7 @@ their values remain `null`.
 
 ```text
 node demo/run.js help
-node demo/run.js prepare [--id ID] [--existing-project] [--parallel] [--json]
+node demo/run.js prepare [--id ID] [--existing-project] [--parallel | --first A|B] [--json]
 node demo/run.js worktrees --trial ID --json
 node demo/run.js attach A|B WORKTREE --session SESSION_ID --trial ID
 node demo/run.js start A|B --trial ID [--copilot]
@@ -275,8 +282,9 @@ For compatibility, omitting `--existing-project` creates the original standalone
 source Git repository under the trial directory. It does not register an app
 project. Use `--existing-project` for all new nested-session demos.
 
-Default mode enforces A then B. `--parallel` allows either to start first and
-both to remain active; shared-state and per-lane locks protect concurrent state.
+Sequential mode follows `--first A|B` and requires that lane to finish before
+the second starts. `--parallel` is for side-by-side demonstrations, not timing
+claims; shared-state and per-lane locks protect concurrent state.
 
 `prepare --json` reports the trial ID, source mode, source and state paths, base
 commit, baseline branch (`null` in standalone mode), and shared prompt. It

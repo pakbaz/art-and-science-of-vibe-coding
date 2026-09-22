@@ -1,2 +1,4 @@
-Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.
+Add the overdue-invoices feature in FEATURE-REQUEST.md.
+Follow the repository instructions and existing tests. Use the fastest documented relevant test while iterating; the coordinator will run the protected full gate.
+Do not change documentation unless FEATURE-REQUEST.md requires it.
 Work only in this repository.
