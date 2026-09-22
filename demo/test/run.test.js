@@ -295,13 +295,19 @@ test("existing-project preparation keeps nested lane worktrees in the same repos
     assert.equal(attached.lanes[lane].baseProof.commonGitDir, path.join(project, ".git"));
     assert.equal(attached.lanes[lane].baseProof.head, info.baseCommit);
   }
+  assert.equal(attached.lanes.A.readyHead, info.baseCommit);
+  assert.equal(attached.lanes.A.preparationProof, null);
+  assert.equal(attached.lanes.B.preparationProof.parent, info.baseCommit);
+  assert.equal(attached.lanes.B.readyHead, attached.lanes.B.preparationProof.commit);
+  assert.equal(git(laneB, ["rev-parse", "HEAD"]), attached.lanes.B.readyHead);
+  assert.equal(git(laneB, ["status", "--porcelain", "--untracked-files=all"]), "");
   assert.equal(fs.existsSync(path.join(laneA, "AGENTS.md")), false);
   assert.equal(fs.existsSync(path.join(laneB, "AGENTS.md")), true);
   for (const lane of ["B", "A"]) invoke(["start", lane, "--trial", info.trialId]);
   for (const [lane, workspace] of [["A", laneA], ["B", laneB]]) {
     const red = JSON.parse(invoke(["check", lane, "--trial", info.trialId, "--json"], true).stdout);
-    assert.equal(red.attempt.full.exitCode, 0);
-    assert.equal(red.attempt.fullDatasetCount, 400000);
+    assert.equal(red.attempt.full.exitCode, lane === "A" ? 0 : 1);
+    assert.equal(red.attempt.fullDatasetCount, lane === "A" ? 400000 : null);
     assert.equal(red.attempt.acceptance.exitCode, 1);
     writeReferenceImplementation(workspace);
     const green = JSON.parse(invoke(["check", lane, "--trial", info.trialId, "--json"]).stdout);
@@ -432,6 +438,31 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
     assert.match(report.resourceContention, /share.*CPU|shared.*resources/i);
   });
 
+  await t.test("sequential mode supports counterbalanced B-first trials", () => {
+    const info = JSON.parse(
+      cli(["prepare", "--id", "b-first", "--first", "B", "--json"]).stdout,
+    );
+    assert.deepEqual(info.laneOrder, ["B", "A"]);
+    cli(["worktrees", "--trial", info.trialId]);
+    const earlyA = cli(["start", "A", "--trial", info.trialId], { allowFailure: true });
+    assert.notEqual(earlyA.status, 0);
+    assert.match(earlyA.stderr, /finish lane B/i);
+    cli(["start", "B", "--trial", info.trialId]);
+    cli([
+      "mark-incomplete",
+      "B",
+      "--reason",
+      "counterbalance test",
+      "--trial",
+      info.trialId,
+    ]);
+    cli(["start", "A", "--trial", info.trialId]);
+    const state = readState(info.statePath);
+    assert.deepEqual(state.laneOrder, ["B", "A"]);
+    assert.equal(state.lanes.A.status, "running");
+    assert.equal(state.lanes.B.status, "incomplete");
+  });
+
   await t.test("concurrent checks preserve both lane histories and full datasets", async () => {
     const info = JSON.parse(cli(["prepare", "--id", "parallel-check", "--json"]).stdout);
     cli(["worktrees", "--trial", info.trialId]);
@@ -460,11 +491,12 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
     const results = await Promise.all(["A", "B"].map((lane) =>
       cliAsync(["check", lane, "--trial", info.trialId, "--json"]),
     ));
-    for (const result of results) {
+    for (const [index, result] of results.entries()) {
+      const lane = ["A", "B"][index];
       assert.equal(result.status, 1, result.stderr);
       const checked = JSON.parse(result.stdout);
-      assert.equal(checked.attempt.full.exitCode, 0, checked.fullOutput);
-      assert.equal(checked.attempt.fullDatasetCount, 400000);
+      assert.equal(checked.attempt.full.exitCode, lane === "A" ? 0 : 1, checked.fullOutput);
+      assert.equal(checked.attempt.fullDatasetCount, lane === "A" ? 400000 : null);
       assert.equal(checked.attempt.acceptance.exitCode, 1);
     }
     const saved = readState(info.statePath);
@@ -623,6 +655,13 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
   assert.notEqual(workspaceA, workspaceB);
   assert.equal(stateAfterAttach.lanes.A.baseProof.head, info.baseCommit);
   assert.equal(stateAfterAttach.lanes.B.baseProof.head, info.baseCommit);
+  assert.equal(stateAfterAttach.lanes.A.readyHead, info.baseCommit);
+  assert.equal(stateAfterAttach.lanes.A.preparationProof, null);
+  assert.equal(stateAfterAttach.lanes.B.preparationProof.parent, info.baseCommit);
+  assert.equal(
+    stateAfterAttach.lanes.B.readyHead,
+    stateAfterAttach.lanes.B.preparationProof.commit,
+  );
   assert.equal(
     stateAfterAttach.lanes.A.baseProof.commonGitDir,
     stateAfterAttach.lanes.B.baseProof.commonGitDir,
@@ -636,20 +675,24 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
     }).stdout,
     "",
   );
-  const bChangedPaths = spawnSync(
+  assert.equal(
+    spawnSync("git", ["status", "--porcelain", "--untracked-files=all"], {
+      cwd: workspaceB,
+      encoding: "utf8",
+    }).stdout,
+    "",
+  );
+  const preparedPaths = spawnSync(
     "git",
-    ["status", "--porcelain", "--untracked-files=all"],
+    ["diff-tree", "--no-commit-id", "--name-only", "-r", stateAfterAttach.lanes.B.readyHead],
     { cwd: workspaceB, encoding: "utf8" },
-  ).stdout
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => line.slice(3))
-    .sort();
-  assert.deepEqual(bChangedPaths, [
+  ).stdout.trim().split(/\r?\n/).sort();
+  assert.deepEqual(preparedPaths, [
     "AGENTS.md",
     "data/fixture-100.json",
     "data/store.js",
     "package.json",
+    "test/overdue.prep.test.js",
   ]);
 
   const repeatWorktrees = JSON.parse(
@@ -687,19 +730,31 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
     assert.equal(readState(prepared.statePath).lanes.B.attempts.length, 0);
   });
 
-  await t.test("B prep fast command runs the repository suite", () => {
+  await t.test("B prep fast command starts with focused failing feature coverage", () => {
+    const env = { ...process.env, INVOICE_AS_OF: "2026-09-18" };
+    delete env.NODE_TEST_CONTEXT;
     const result = spawnSync("npm", ["run", "test:fast"], {
       cwd: workspaceB,
-      env: { ...process.env, INVOICE_AS_OF: "2026-09-18" },
+      env,
       encoding: "utf8",
     });
-    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /prepared overdue workflow/i);
   });
+
+  fs.writeFileSync(path.join(workspaceA, "setup-drift.txt"), "unexpected setup change\n");
+  const driftedStart = cli(["start", "A", "--trial", "trial-one"], { allowFailure: true });
+  assert.notEqual(driftedStart.status, 0);
+  assert.match(driftedStart.stderr, /changed after attachment|must be clean/i);
+  fs.unlinkSync(path.join(workspaceA, "setup-drift.txt"));
 
   const startedA = JSON.parse(cli(["start", "A", "--trial", "trial-one", "--json"]).stdout);
   assert.equal(
     startedA.prompt,
-    "Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.\n" +
+    "Add the overdue-invoices feature in FEATURE-REQUEST.md.\n" +
+      "Follow the repository instructions and existing tests. Use the fastest documented " +
+      "relevant test while iterating; the coordinator will run the protected full gate.\n" +
+      "Do not change documentation unless FEATURE-REQUEST.md requires it.\n" +
       "Work only in this repository.",
   );
 
@@ -823,6 +878,10 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
   fs.writeFileSync(path.join(workspaceB, "package.json"), `${JSON.stringify(packageB, null, 2)}\n`);
   fs.appendFileSync(path.join(workspaceB, "data", "generate.js"), "\n// changed generator\n");
   fs.appendFileSync(path.join(workspaceB, "data", "store.js"), "\n// changed store\n");
+  fs.appendFileSync(
+    path.join(workspaceB, "test", "overdue.prep.test.js"),
+    "\n// weakened prepared coverage\n",
+  );
   const blockedB = cli(["check", "B", "--trial", "trial-one", "--json"], {
     allowFailure: true,
   });
@@ -831,18 +890,23 @@ test("end-to-end runner preserves honest state, gate output, and nullable metric
   assert.match(blockedBResult.fullOutput, /trusted full-test script changed/i);
   assert.match(blockedBResult.fullOutput, /generator changed/i);
   assert.match(blockedBResult.fullOutput, /store changed/i);
+  assert.match(blockedBResult.fullOutput, /prepared regression changed/i);
 
   fs.copyFileSync(path.join(DEMO_ROOT, "prep", "package.json"), path.join(workspaceB, "package.json"));
   fs.copyFileSync(path.join(DEMO_ROOT, "baseline", "data", "generate.js"), path.join(workspaceB, "data", "generate.js"));
   fs.copyFileSync(path.join(DEMO_ROOT, "prep", "store.js"), path.join(workspaceB, "data", "store.js"));
+  fs.copyFileSync(
+    path.join(DEMO_ROOT, "prep", "overdue.prep.test.js"),
+    path.join(workspaceB, "test", "overdue.prep.test.js"),
+  );
 
   const redB = cli(["check", "B", "--trial", "trial-one", "--json"], {
     allowFailure: true,
   });
   assert.equal(redB.status, 1);
   const redBResult = JSON.parse(redB.stdout);
-  assert.equal(redBResult.attempt.full.exitCode, 0);
-  assert.equal(redBResult.attempt.fullDatasetCount, 400000);
+  assert.equal(redBResult.attempt.full.exitCode, 1);
+  assert.equal(redBResult.attempt.fullDatasetCount, null);
   assert.deepEqual(redBResult.attempt.fullEnvironment, {
     INVOICE_AS_OF: "2026-09-18",
     INVOICE_COUNT: "400000",

@@ -10,10 +10,20 @@ const { isDeepStrictEqual } = require("node:util");
 const DEMO_ROOT = __dirname;
 const RUNS_ROOT = path.resolve(process.env.DEMO_RUNS_ROOT || path.join(DEMO_ROOT, ".runs"));
 const FEATURE_PROMPT =
-  "Add the overdue-invoices feature in FEATURE-REQUEST.md. Make it work and check it.\n" +
+  "Add the overdue-invoices feature in FEATURE-REQUEST.md.\n" +
+  "Follow the repository instructions and existing tests. Use the fastest documented relevant " +
+  "test while iterating; the coordinator will run the protected full gate.\n" +
+  "Do not change documentation unless FEATURE-REQUEST.md requires it.\n" +
   "Work only in this repository.";
 const AS_OF = "2026-09-18";
 const LANES = new Set(["A", "B"]);
+const B_PREPARATION_FILES = [
+  "AGENTS.md",
+  "data/fixture-100.json",
+  "data/store.js",
+  "package.json",
+  "test/overdue.prep.test.js",
+];
 const snapshots = new WeakMap();
 const heldLocks = new Map();
 
@@ -291,6 +301,9 @@ function trustedBaseline(sourceRepo) {
       A: sha256(path.join(sourceRepo, "data", "store.js")),
       B: sha256(path.join(DEMO_ROOT, "prep", "store.js")),
     },
+    preparedRegressionFiles: {
+      "test/overdue.prep.test.js": sha256(path.join(DEMO_ROOT, "prep", "overdue.prep.test.js")),
+    },
   };
 }
 
@@ -337,6 +350,11 @@ function createProjectBaseline(trialRoot, trialId) {
 }
 
 function prepare(flags) {
+  if (flags.parallel && flags.first) {
+    throw new CliError("--first is only valid for sequential trials");
+  }
+  const firstLane = requireLane(flags.first || "A");
+  const laneOrder = [firstLane, firstLane === "A" ? "B" : "A"];
   const trialId = safeTrialId(flags.id);
   const trialRoot = path.join(RUNS_ROOT, trialId);
   if (fs.existsSync(trialRoot)) {
@@ -375,6 +393,7 @@ function prepare(flags) {
     version: 1,
     trialId,
     executionMode: flags.parallel ? "parallel" : "sequential",
+    laneOrder,
     createdAt: now(),
     statePath,
     trialRoot,
@@ -403,6 +422,7 @@ function prepare(flags) {
   return {
     trialId,
     executionMode: state.executionMode,
+    laneOrder,
     sourceMode: state.sourceMode,
     sourceRepo,
     statePath,
@@ -418,6 +438,8 @@ function newLane() {
     sessionId: null,
     attachedAt: null,
     baseProof: null,
+    readyHead: null,
+    preparationProof: null,
     status: "unattached",
     startedAt: null,
     stoppedAt: null,
@@ -474,7 +496,7 @@ function validateWorkspace(state, candidate) {
   };
 }
 
-function overlayB(workspace) {
+function overlayB(workspace, baseCommit) {
   const started = process.hrtime.bigint();
   fs.copyFileSync(path.join(DEMO_ROOT, "prep", "AGENTS.md"), path.join(workspace, "AGENTS.md"));
   fs.copyFileSync(
@@ -483,7 +505,47 @@ function overlayB(workspace) {
   );
   fs.copyFileSync(path.join(DEMO_ROOT, "prep", "store.js"), path.join(workspace, "data", "store.js"));
   fs.copyFileSync(path.join(DEMO_ROOT, "prep", "package.json"), path.join(workspace, "package.json"));
-  return elapsedMs(started);
+  fs.copyFileSync(
+    path.join(DEMO_ROOT, "prep", "overdue.prep.test.js"),
+    path.join(workspace, "test", "overdue.prep.test.js"),
+  );
+  git(workspace, ["add", "--", ...B_PREPARATION_FILES]);
+  git(workspace, [
+    "-c",
+    "user.name=Copilot App",
+    "-c",
+    "user.email=223556219+Copilot@users.noreply.github.com",
+    "commit",
+    "--quiet",
+    "-m",
+    "Add prepared invoice workflow",
+    "-m",
+    "Co-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>",
+  ]);
+  const commit = git(workspace, ["rev-parse", "HEAD"]).stdout.trim();
+  const parent = git(workspace, ["rev-parse", "HEAD^"]).stdout.trim();
+  if (parent !== baseCommit) {
+    throw new CliError(`B preparation parent ${parent} does not match trial base ${baseCommit}`);
+  }
+  const dirty = git(workspace, ["status", "--porcelain", "--untracked-files=all"]).stdout.trim();
+  if (dirty) throw new CliError(`B preparation must leave a clean worktree:\n${dirty}`);
+  const files = git(workspace, [
+    "diff-tree",
+    "--no-commit-id",
+    "--name-only",
+    "-r",
+    commit,
+  ]).stdout.trim().split(/\r?\n/).filter(Boolean).sort();
+  if (!isDeepStrictEqual(files, [...B_PREPARATION_FILES].sort())) {
+    throw new CliError(`B preparation commit contains unexpected files:\n${files.join("\n")}`);
+  }
+  return {
+    elapsedMs: elapsedMs(started),
+    commit,
+    parent,
+    files,
+    clean: true,
+  };
 }
 
 function attach(state, lane, workspaceArg, sessionId) {
@@ -502,7 +564,12 @@ function attach(state, lane, workspaceArg, sessionId) {
 
   const setupStarted = process.hrtime.bigint();
   let overlayMs = 0;
-  if (lane === "B") overlayMs = overlayB(proof.workspace);
+  let preparationProof = null;
+  if (lane === "B") {
+    preparationProof = overlayB(proof.workspace, proof.head);
+    overlayMs = preparationProof.elapsedMs;
+  }
+  const readyHead = preparationProof ? preparationProof.commit : proof.head;
   const setupMs = elapsedMs(setupStarted);
 
   state.lanes[lane] = {
@@ -511,6 +578,8 @@ function attach(state, lane, workspaceArg, sessionId) {
     sessionId,
     attachedAt: now(),
     baseProof: proof,
+    readyHead,
+    preparationProof,
     status: "ready",
   };
   if (lane === "A") state.preparation.laneASetupMs = setupMs;
@@ -522,6 +591,8 @@ function attach(state, lane, workspaceArg, sessionId) {
     workspace: proof.workspace,
     sessionId,
     baseCommit: proof.head,
+    readyCommit: readyHead,
+    preparationCommit: preparationProof?.commit || null,
     commonGitDir: proof.commonGitDir,
     setupMs,
     overlayMs,
@@ -549,13 +620,31 @@ function startLane(state, lane) {
   if (!record.workspace) throw new CliError(`attach lane ${lane} before starting it`);
   if (record.status !== "ready") throw new CliError(`lane ${lane} cannot start from status ${record.status}`);
   exactRealDirectory(record.workspace, `lane ${lane} workspace`);
-  const other = lane === "A" ? "B" : "A";
-  if (state.executionMode !== "parallel" && state.lanes[other].status === "running") {
-    throw new CliError(`lane ${other} is still running; runs must be sequential`);
+  const head = git(record.workspace, ["rev-parse", "HEAD"]).stdout.trim();
+  if (head !== record.readyHead) {
+    throw new CliError(
+      `lane ${lane} changed after attachment: HEAD ${head} does not match ready commit ${record.readyHead}`,
+    );
   }
-  if (state.executionMode !== "parallel" && lane === "B" &&
-      !["passed", "incomplete"].includes(state.lanes.A.status)) {
-    throw new CliError("finish lane A (pass or mark incomplete) before starting lane B");
+  const dirty = git(
+    record.workspace,
+    ["status", "--porcelain", "--untracked-files=all"],
+  ).stdout.trim();
+  if (dirty) {
+    throw new CliError(`lane ${lane} must be clean before the measured prompt:\n${dirty}`);
+  }
+  const other = lane === "A" ? "B" : "A";
+  if (state.executionMode !== "parallel") {
+    if (state.lanes[other].status === "running") {
+      throw new CliError(`lane ${other} is still running; runs must be sequential`);
+    }
+    const laneOrder = state.laneOrder || ["A", "B"];
+    const priorLane = laneOrder[0];
+    if (lane === laneOrder[1] && !["passed", "incomplete"].includes(state.lanes[priorLane].status)) {
+      throw new CliError(
+        `finish lane ${priorLane} (pass or mark incomplete) before starting lane ${lane}`,
+      );
+    }
   }
   record.status = "running";
   record.startedAt = now();
@@ -636,6 +725,13 @@ function verifyTrustedFullPath(state, lane) {
     const file = path.join(workspace, ...relative.split("/"));
     if (!fs.existsSync(file)) errors.push(`original regression deleted: ${relative}`);
     else if (sha256(file) !== expected) errors.push(`original regression changed: ${relative}`);
+  }
+  if (lane === "B") {
+    for (const [relative, expected] of Object.entries(trusted.preparedRegressionFiles || {})) {
+      const file = path.join(workspace, ...relative.split("/"));
+      if (!fs.existsSync(file)) errors.push(`prepared regression deleted: ${relative}`);
+      else if (sha256(file) !== expected) errors.push(`prepared regression changed: ${relative}`);
+    }
   }
 
   const generator = path.join(workspace, "data", "generate.js");
@@ -966,6 +1062,7 @@ function compare(state) {
   const comparison = {
     trialId: state.trialId,
     executionMode: state.executionMode || "sequential",
+    laneOrder: state.laneOrder || ["A", "B"],
     resourceContention: state.executionMode === "parallel"
       ? "Parallel lanes share CPU, disk and network resources; wall times are not an isolated latency benchmark."
       : "Sequential lanes avoid intentional overlap; host load and presenter pauses still affect wall time.",
@@ -1013,6 +1110,7 @@ function printComparison(value) {
   const lines = [
     `Trial ${value.trialId}`,
     `Execution mode: ${value.executionMode}`,
+    `Lane order: ${value.laneOrder.join(" then ")}`,
     value.resourceContention,
     `Shared source preparation: ${formatMs(value.sourcePreparationMs)}`,
     `Preparation timing scope: ${value.preparationTimingScope}`,
@@ -1046,7 +1144,7 @@ function help() {
   return `Honest invoice A/B demo runner
 
 Usage:
-  node demo/run.js prepare [--id ID] [--existing-project] [--parallel] [--json]
+  node demo/run.js prepare [--id ID] [--existing-project] [--parallel | --first A|B] [--json]
   node demo/run.js worktrees --trial ID [--json]
   node demo/run.js attach A|B WORKSPACE --session ID --trial ID [--json]
   node demo/run.js start A|B --trial ID [--copilot | --json]
@@ -1136,7 +1234,7 @@ function main(argv = process.argv.slice(2)) {
     return;
   }
   if (command === "prepare") {
-    assertAllowedFlags(flags, ["id", "json", "parallel", "existing-project"]);
+    assertAllowedFlags(flags, ["id", "json", "parallel", "first", "existing-project"]);
     if (positionals.length !== 1) throw new CliError("prepare takes no positional arguments");
     output(prepare(flags), flags.json);
     return;
